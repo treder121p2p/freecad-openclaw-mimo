@@ -97,4 +97,79 @@ echo "Web UI started on port 9876" >> /var/log/freecad/rpc_startup.log
 python3 /opt/freecad/bridge/ai_bridge.py >> /var/log/freecad/bridge.log 2>&1 &
 echo "AI Bridge started on port 9877" >> /var/log/freecad/rpc_startup.log
 
+# Watchdog: restart x11vnc if it dies
+(
+  while true; do
+    sleep 10
+    if ! pgrep -f "x11vnc -display" > /dev/null 2>&1; then
+      echo "x11vnc died, restarting..." >> /var/log/freecad/rpc_startup.log
+      x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "$VNC_PORT" >> /var/log/freecad/x11vnc.log 2>&1 &
+    fi
+    if ! pgrep -f "websockify" > /dev/null 2>&1; then
+      echo "websockify died, restarting..." >> /var/log/freecad/rpc_startup.log
+      websockify --web=/usr/share/novnc/ "$NOVNC_PORT" localhost:"$VNC_PORT" >> /var/log/freecad/novnc.log 2>&1 &
+    fi
+  done
+) &
+
+# Watchdog: restart x11vnc if it dies
+(
+  while true; do
+    sleep 10
+    if ! pgrep -f "x11vnc -display" > /dev/null 2>&1; then
+      echo "x11vnc died, restarting..." >> /var/log/freecad/rpc_startup.log
+      x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "$VNC_PORT" >> /var/log/freecad/x11vnc.log 2>&1 &
+    fi
+    if ! pgrep -f "websockify" > /dev/null 2>&1; then
+      echo "websockify died, restarting..." >> /var/log/freecad/rpc_startup.log
+      websockify --web=/usr/share/novnc/ "$NOVNC_PORT" localhost:"$VNC_PORT" >> /var/log/freecad/novnc.log 2>&1 &
+    fi
+  done
+) &
+
+# Watchdog: restart x11vnc if it dies
+(
+  while true; do
+    sleep 10
+    if ! pgrep -f "x11vnc -display" > /dev/null 2>&1; then
+      echo "x11vnc died, restarting..." >> /var/log/freecad/rpc_startup.log
+      x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "$VNC_PORT" >> /var/log/freecad/x11vnc.log 2>&1 &
+    fi
+    if ! pgrep -f "websockify" > /dev/null 2>&1; then
+      echo "websockify died, restarting..." >> /var/log/freecad/rpc_startup.log
+      websockify --web=/usr/share/novnc/ "$NOVNC_PORT" localhost:"$VNC_PORT" >> /var/log/freecad/novnc.log 2>&1 &
+    fi
+  done
+) &
+
+# Watchdog: restart x11vnc if it dies
+(
+  while true; do
+    sleep 10
+    if ! pgrep -f "x11vnc -display" > /dev/null 2>&1; then
+      echo "x11vnc died, restarting..." >> /var/log/freecad/rpc_startup.log
+      x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "$VNC_PORT" >> /var/log/freecad/x11vnc.log 2>&1 &
+    fi
+    if ! pgrep -f "websockify" > /dev/null 2>&1; then
+      echo "websockify died, restarting..." >> /var/log/freecad/rpc_startup.log
+      websockify --web=/usr/share/novnc/ "$NOVNC_PORT" localhost:"$VNC_PORT" >> /var/log/freecad/novnc.log 2>&1 &
+    fi
+  done
+) &
+
+# Watchdog: restart x11vnc if it dies
+(
+  while true; do
+    sleep 10
+    if ! pgrep -f "x11vnc -display" > /dev/null 2>&1; then
+      echo "x11vnc died, restarting..." >> /var/log/freecad/rpc_startup.log
+      x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "$VNC_PORT" >> /var/log/freecad/x11vnc.log 2>&1 &
+    fi
+    if ! pgrep -f "websockify" > /dev/null 2>&1; then
+      echo "websockify died, restarting..." >> /var/log/freecad/rpc_startup.log
+      websockify --web=/usr/share/novnc/ "$NOVNC_PORT" localhost:"$VNC_PORT" >> /var/log/freecad/novnc.log 2>&1 &
+    fi
+  done
+) &
+
 tail -f /var/log/freecad/*.log
