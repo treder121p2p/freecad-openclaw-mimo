@@ -440,6 +440,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.handle_export()
         elif self.path == '/api/execute':
             self.handle_execute()
+        elif self.path == '/api/feedback':
+            self.handle_feedback()
         else:
             self.send_response(404)
             self.end_headers()
@@ -589,6 +591,112 @@ class ChatHandler(BaseHTTPRequestHandler):
             
         except Exception as e:
             log.error(f"Execute error: {e}")
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+    def handle_feedback(self):
+        """Compare FreeCAD screenshot with reference image using vision model."""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode())
+            
+            reference_image = data.get('reference_image', '')  # base64 data URL from user
+            description = data.get('description', '')  # text description of what to compare
+            
+            if not reference_image:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "No reference image provided"}).encode())
+                return
+            
+            # Step 1: Capture screenshot from FreeCAD
+            log.info("Feedback: capturing screenshot...")
+            screenshot_code = (
+                'import FreeCADGui, tempfile, os\n'
+                'path = os.path.join(tempfile.gettempdir(), "feedback_screenshot.png")\n'
+                'FreeCADGui.ActiveDocument.ActiveView.saveImage(path, 800, 600, "PNG")\n'
+                'print("SCREENSHOT_OK:" + path)'
+            )
+            try:
+                rpc_result = rpc_call('execute_code', [screenshot_code])
+                output = rpc_result.get('message', '') if isinstance(rpc_result, dict) else str(rpc_result)
+                if 'SCREENSHOT_OK:' not in output:
+                    raise Exception('Screenshot capture failed')
+                screenshot_path = output.split('SCREENSHOT_OK:')[1].strip()
+            except Exception as e:
+                raise Exception(f'Screenshot failed: {e}')
+            
+            # Step 2: Read screenshot as base64
+            import base64 as b64
+            with open(screenshot_path, 'rb') as f:
+                screenshot_b64 = 'data:image/png;base64,' + b64.b64encode(f.read()).decode('ascii')
+            
+            # Step 3: Send both images to Qwen VL for comparison
+            log.info("Feedback: comparing with vision model...")
+            compare_system = """You are a FreeCAD quality inspector. Compare the CREATED MODEL (screenshot) with the REFERENCE IMAGE (blueprint/drawing). 
+
+Analyze:
+1. What shape is in the reference image?
+2. What shape is in the created model screenshot?
+3. What differences do you see?
+4. What Python code would fix the differences?
+
+Respond in JSON format:
+{"match": true/false, "differences": ["diff1", "diff2"], "correction_code": "python code to fix" or null, "summary": "brief summary in Russian"}"""
+            
+            messages = [
+                {"role": "system", "content": compare_system},
+                {"role": "user", "content": [
+                    {"type": "text", "text": f"Сравни созданную модель с чертежом. Описание: {description}\n\nОтвечай ТОЛЬКО на русском языке."},
+                    {"type": "image_url", "image_url": {"url": screenshot_b64}},
+                    {"type": "image_url", "image_url": {"url": reference_image}}
+                ]}
+            ]
+            
+            ai_response = call_mimo(messages, model='qwen/qwen2.5-vl-72b-instruct')
+            
+            # Parse response
+            comparison = extract_json_from_response(ai_response)
+            if not comparison:
+                comparison = {
+                    "match": False,
+                    "differences": [],
+                    "correction_code": None,
+                    "summary": ai_response[:200]
+                }
+            
+            # Step 4: If correction needed, execute it
+            correction_applied = False
+            if comparison.get('correction_code') and not comparison.get('match', True):
+                log.info("Feedback: applying correction...")
+                try:
+                    safe_code = comparison['correction_code'].encode('ascii', 'ignore').decode('ascii')
+                    rpc_call('execute_code', [safe_code])
+                    correction_applied = True
+                    log.info("Feedback: correction applied successfully")
+                except Exception as e:
+                    log.error(f"Feedback: correction failed: {e}")
+            
+            result = {
+                "status": "ok",
+                "screenshot": screenshot_b64,
+                "comparison": comparison,
+                "correction_applied": correction_applied
+            }
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+            
+        except Exception as e:
+            log.error(f"Feedback error: {e}")
             self.send_response(500)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
