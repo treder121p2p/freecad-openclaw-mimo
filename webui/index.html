@@ -333,6 +333,50 @@
       transition: all 0.2s;
     }
     .quick-btn:hover { background: #e94560; color: #fff; border-color: #e94560; }
+    .run-code-btn { background: #2d6a4f; color: #fff; border-color: #2d6a4f; }
+    .run-code-btn:hover { background: #1a4731; }
+
+    .code-editor {
+      display: none;
+      padding: 8px 14px;
+      background: #0d1b2a;
+      border-top: 1px solid #333;
+    }
+    .code-editor.active { display: block; }
+    .code-editor textarea {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #444;
+      color: #4ec9b0;
+      padding: 8px;
+      border-radius: 6px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 12px;
+      resize: vertical;
+      min-height: 80px;
+      outline: none;
+    }
+    .code-editor textarea:focus { border-color: #4ec9b0; }
+    .code-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .execute-btn {
+      background: #4ec9b0;
+      color: #0d1117;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .execute-btn:hover { background: #3db89f; }
+    .execute-btn:disabled { background: #555; cursor: not-allowed; }
+    .clear-btn { background: #d32f2f; color: #fff; }
+    .clear-btn:hover { background: #b71c1c; }
 
     .export-panel {
       padding: 6px 14px;
@@ -422,6 +466,16 @@
         <button class="quick-btn" onclick="quickAction('Создай цилиндр r=5mm h=20mm')">🔵 Цилиндр</button>
         <button class="quick-btn" onclick="quickAction('Покажи список объектов')">📋 Объекты</button>
         <button class="quick-btn" onclick="quickAction('Сделай вырез в кубе цилиндром')">✂️ Boolean</button>
+        <button class="quick-btn run-code-btn" onclick="toggleCodeEditor()">▶️ Код</button>
+      </div>
+
+      <!-- Code Editor (hidden by default) -->
+      <div class="code-editor" id="code-editor">
+        <textarea id="code-input" placeholder="import FreeCAD, Part&#10;doc = FreeCAD.activeDocument() or FreeCAD.newDocument(&quot;MyDoc&quot;)&#10;box = doc.addObject(&quot;Part::Box&quot;, &quot;Box&quot;)&#10;box.Length = 10.0&#10;box.Width = 10.0&#10;box.Height = 10.0&#10;doc.recompute()" rows="6"></textarea>
+        <div class="code-actions">
+          <button class="execute-btn" onclick="executeCode()">▶️ Выполнить</button>
+          <button class="execute-btn clear-btn" onclick="clearCode()">🗑 Очистить</button>
+        </div>
       </div>
 
       <!-- Export Panel -->
@@ -652,6 +706,46 @@
         };
       }
       return null;
+    }
+
+    // --- Code Editor ---
+    function toggleCodeEditor() {
+      var editor = document.getElementById('code-editor');
+      editor.classList.toggle('active');
+      if (editor.classList.contains('active')) {
+        document.getElementById('code-input').focus();
+      }
+    }
+
+    function executeCode() {
+      var code = document.getElementById('code-input').value.trim();
+      if (!code) {
+        addMessage('system', '❌ Введите код для выполнения');
+        return;
+      }
+      var btn = document.querySelector('.execute-btn');
+      if (btn) btn.disabled = true;
+      addMessage('system', '▶️ Выполняю код...');
+
+      fetch('/api/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.status === 'ok') {
+          addMessage('assistant', '✅ Код выполнен\n\n```python\n' + code + '\n```\n\n**Результат:**\n```\n' + (data.output || 'OK') + '\n```');
+        } else {
+          addMessage('system', '❌ Ошибка: ' + (data.error || 'Unknown'));
+        }
+      }).catch(function(err) {
+        addMessage('system', '❌ Ошибка: ' + err.message);
+      }).finally(function() {
+        if (btn) btn.disabled = false;
+      });
+    }
+
+    function clearCode() {
+      document.getElementById('code-input').value = '';
     }
 
     function quickAction(text) {

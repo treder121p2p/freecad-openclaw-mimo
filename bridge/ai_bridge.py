@@ -438,6 +438,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.handle_status()
         elif self.path == '/api/export':
             self.handle_export()
+        elif self.path == '/api/execute':
+            self.handle_execute()
         else:
             self.send_response(404)
             self.end_headers()
@@ -538,6 +540,55 @@ class ChatHandler(BaseHTTPRequestHandler):
             
         except Exception as e:
             log.error(f"Export error: {e}")
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+    def handle_execute(self):
+        """Execute Python code directly in FreeCAD."""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode())
+            
+            code = data.get('code', '')
+            if not code.strip():
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "No code provided"}).encode())
+                return
+            
+            # Strip non-ASCII
+            safe_code = code.encode('ascii', 'ignore').decode('ascii')
+            
+            # Ensure document exists
+            try:
+                rpc_call('execute_code', ['import FreeCAD; doc = FreeCAD.activeDocument() or FreeCAD.newDocument("AIDoc")'])
+            except:
+                pass
+            
+            # Execute code
+            rpc_result = rpc_call('execute_code', [safe_code])
+            output = rpc_result.get('message', '') if isinstance(rpc_result, dict) else str(rpc_result)
+            
+            result = {
+                "status": "ok",
+                "output": output,
+                "code": code
+            }
+            log.info(f"Code executed: {len(code)} chars")
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+            
+        except Exception as e:
+            log.error(f"Execute error: {e}")
             self.send_response(500)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
