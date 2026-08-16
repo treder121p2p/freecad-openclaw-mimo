@@ -1,0 +1,22 @@
+# Docker
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# FreeCAD temp
+*.FCStd1
+*.bak

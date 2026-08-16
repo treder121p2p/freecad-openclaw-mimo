@@ -1,0 +1,44 @@
+# This file is a FreeCAD Macro that auto-starts the MCP RPC server.
+# FreeCAD loads macros from the Macros directory.
+# We place this in the Mod directory as a workaround.
+
+import sys
+import os
+import traceback
+
+log = "/var/log/freecad/mcp_addon.log"
+
+def _alog(msg):
+    try:
+        with open(log, "a") as f:
+            f.write(msg + "\n")
+    except:
+        pass
+
+_alog("=== Macro startup_rpc started ===")
+
+try:
+    import FreeCAD
+    import FreeCADGui
+    _alog("FreeCAD and FreeCADGui imported")
+    
+    addon_dir = "/config/Mod/FreeCADMCP"
+    if addon_dir not in sys.path:
+        sys.path.insert(0, addon_dir)
+    _alog("sys.path set: " + addon_dir)
+    
+    from rpc_server import rpc_server
+    _alog("rpc_server imported")
+    
+    settings = rpc_server.load_settings()
+    _alog("Settings: " + str(settings))
+    
+    if settings.get("auto_start_rpc", False):
+        msg = rpc_server.start_rpc_server()
+        _alog("RPC started: " + msg)
+        FreeCAD.Console.PrintMessage("[MCP] " + msg + "\n")
+    else:
+        _alog("auto_start_rpc is false")
+except Exception as e:
+    _alog("ERROR: " + str(e))
+    _alog(traceback.format_exc())
