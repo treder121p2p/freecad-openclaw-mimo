@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /opt/freecad /workspace /config /var/log/freecad
+RUN mkdir -p /opt/freecad /workspace /config /var/log/freecad /var/log/freecad/sessions
 
 # VNC password (default: FreeCAD2026 — change via volume mount)
 RUN x11vnc --storepasswd "FreeCAD2026" /opt/freecad/.vnc_pass

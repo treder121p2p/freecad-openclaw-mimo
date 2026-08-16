@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * FreeCAD Web UI Server — VNC + Chat + RPC bridge
+ * FreeCAD Web UI Server — VNC + Chat + RPC bridge + Session Memory
  * Chat proxied to AI Bridge (port 9877) for MiMo ↔ FreeCAD
  * Compatible with Node.js 12+
  */
@@ -8,6 +8,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const url = require('url');
 
 const PORT = parseInt(process.env.WEBUI_PORT || '9876', 10);
 const VNC_HOST = process.env.VNC_HOST || 'localhost';
@@ -16,6 +17,10 @@ const RPC_HOST = process.env.RPC_HOST || 'localhost';
 const RPC_PORT = parseInt(process.env.RPC_PORT || '9875', 10);
 const BRIDGE_HOST = process.env.BRIDGE_HOST || 'localhost';
 const BRIDGE_PORT = parseInt(process.env.BRIDGE_PORT || '9877', 10);
+const SESSION_DIR = process.env.SESSION_DIR || '/var/log/freecad/sessions';
+
+// Ensure session directory exists
+try { fs.mkdirSync(SESSION_DIR, { recursive: true }); } catch(e) {}
 
 // Parse XML-RPC struct response
 function parseXmlRpcResponse(xml) {
@@ -77,6 +82,75 @@ function rpcCall(method, args) {
   });
 }
 
+// --- Session Memory ---
+function getSessionPath(sessionId) {
+  // Sanitize session ID to prevent path traversal
+  var safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+  return path.join(SESSION_DIR, safe + '.json');
+}
+
+function loadSession(sessionId) {
+  try {
+    var data = fs.readFileSync(getSessionPath(sessionId), 'utf-8');
+    return JSON.parse(data);
+  } catch(e) {
+    return { session_id: sessionId, messages: [], created: Date.now() };
+  }
+}
+
+function saveSession(sessionId, messages) {
+  var session = loadSession(sessionId);
+  session.session_id = sessionId;
+  session.messages = messages;
+  session.updated = Date.now();
+  if (!session.created) session.created = Date.now();
+  try {
+    fs.writeFileSync(getSessionPath(sessionId), JSON.stringify(session, null, 2));
+    return true;
+  } catch(e) {
+    console.error('Session save error:', e.message);
+    return false;
+  }
+}
+
+function clearSession(sessionId) {
+  try {
+    fs.unlinkSync(getSessionPath(sessionId));
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+function listSessions() {
+  try {
+    var files = fs.readdirSync(SESSION_DIR).filter(function(f) { return f.endsWith('.json'); });
+    return files.map(function(f) {
+      try {
+        var data = JSON.parse(fs.readFileSync(path.join(SESSION_DIR, f), 'utf-8'));
+        return {
+          session_id: data.session_id,
+          messages: data.messages ? data.messages.length : 0,
+          created: data.created,
+          updated: data.updated
+        };
+      } catch(e) { return null; }
+    }).filter(Boolean);
+  } catch(e) { return []; }
+}
+
+// --- Parse JSON body ---
+function parseBody(req) {
+  return new Promise(function(resolve, reject) {
+    var body = '';
+    req.on('data', function(chunk) { body += chunk; });
+    req.on('end', function() {
+      try { resolve(JSON.parse(body)); }
+      catch(e) { reject(new Error('Invalid JSON')); }
+    });
+  });
+}
+
 // --- Proxy to AI Bridge ---
 function proxyToBridge(req, res) {
   var body = '';
@@ -97,7 +171,6 @@ function proxyToBridge(req, res) {
       });
     });
     bridgeReq.on('error', function(err) {
-      // Fallback to direct RPC if bridge is down
       try {
         var parsed = JSON.parse(body);
         rpcCall('execute_code', [parsed.message]).then(function(result) {
@@ -132,32 +205,85 @@ function proxyToVnc(req, res) {
   req.pipe(proxy);
 }
 
+// --- JSON response helper ---
+function jsonResponse(res, data, status) {
+  res.writeHead(status || 200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+  res.end(JSON.stringify(data));
+}
+
 // --- Main HTTP server ---
 var server = http.createServer(function(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200, {
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    });
+    res.end();
+    return;
+  }
+
+  var parsed = url.parse(req.url, true);
 
   if (req.url === '/' || req.url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     fs.createReadStream(path.join(__dirname, 'index.html')).pipe(res);
     return;
   }
-  if (req.url === '/api/config') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ vncHost: 'localhost', vncPort: String(PORT) }));
+
+  // --- API Routes ---
+  if (parsed.pathname === '/api/config') {
+    jsonResponse(res, { vncHost: 'localhost', vncPort: String(PORT) });
     return;
   }
-  if (req.url === '/api/chat' && req.method === 'POST') {
+
+  if (parsed.pathname === '/api/chat' && req.method === 'POST') {
     proxyToBridge(req, res);
     return;
   }
-  if (req.url === '/api/rpc-test') {
+
+  if (parsed.pathname === '/api/rpc-test') {
     rpcCall('execute_code', ['import FreeCAD; print(FreeCAD.Version())']).then(function(result) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, result: result }));
+      jsonResponse(res, { ok: true, result: result });
     }).catch(function(err) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: err.message }));
+      jsonResponse(res, { ok: false, error: err.message });
     });
+    return;
+  }
+
+  // --- Session Memory API ---
+  if (parsed.pathname === '/api/session/save' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var ok = saveSession(body.session_id, body.messages || []);
+      jsonResponse(res, { ok: ok });
+    }).catch(function(e) {
+      jsonResponse(res, { ok: false, error: e.message }, 400);
+    });
+    return;
+  }
+
+  if (parsed.pathname === '/api/session/load' && req.method === 'GET') {
+    var sessionId = parsed.query.session_id;
+    if (!sessionId) { jsonResponse(res, { error: 'session_id required' }, 400); return; }
+    var session = loadSession(sessionId);
+    jsonResponse(res, session);
+    return;
+  }
+
+  if (parsed.pathname === '/api/session/clear' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var ok = clearSession(body.session_id);
+      jsonResponse(res, { ok: ok });
+    }).catch(function(e) {
+      jsonResponse(res, { ok: false, error: e.message }, 400);
+    });
+    return;
+  }
+
+  if (parsed.pathname === '/api/session/list') {
+    jsonResponse(res, { sessions: listSessions() });
     return;
   }
 
@@ -192,4 +318,5 @@ server.listen(PORT, '0.0.0.0', function() {
   console.log('FreeCAD Web UI: http://localhost:' + PORT);
   console.log('  Chat -> AI Bridge at ' + BRIDGE_HOST + ':' + BRIDGE_PORT);
   console.log('  VNC proxied from ' + VNC_HOST + ':' + VNC_PORT);
+  console.log('  Sessions stored in ' + SESSION_DIR);
 });

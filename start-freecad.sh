@@ -6,7 +6,7 @@ export VNC_PORT=${VNC_PORT:-5900}
 export NOVNC_PORT=${NOVNC_PORT:-6080}
 export HOME=${HOME:-/config}
 
-mkdir -p "$HOME" /var/log/freecad
+mkdir -p "$HOME" /var/log/freecad /var/log/freecad/sessions
 
 # --- Phase 1: Kill stale processes (wait for them to die) ---
 if [ "$DISPLAY" = ":1" ]; then
