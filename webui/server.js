@@ -18,6 +18,7 @@ const RPC_PORT = parseInt(process.env.RPC_PORT || '9875', 10);
 const BRIDGE_HOST = process.env.BRIDGE_HOST || 'localhost';
 const BRIDGE_PORT = parseInt(process.env.BRIDGE_PORT || '9877', 10);
 const SESSION_DIR = process.env.SESSION_DIR || '/var/log/freecad/sessions';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
 // Ensure session directory exists
 try { fs.mkdirSync(SESSION_DIR, { recursive: true }); } catch(e) {}
@@ -166,7 +167,7 @@ function proxyToBridge(req, res) {
       var data = '';
       bridgeRes.on('data', function(chunk) { data += chunk; });
       bridgeRes.on('end', function() {
-        res.writeHead(bridgeRes.statusCode, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.writeHead(bridgeRes.statusCode, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': CORS_ORIGIN });
         res.end(data);
       });
     });
@@ -175,14 +176,14 @@ function proxyToBridge(req, res) {
         var parsed = JSON.parse(body);
         rpcCall('execute_code', [parsed.message]).then(function(result) {
           var output = result.message || JSON.stringify(result);
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': CORS_ORIGIN });
           res.end(JSON.stringify({ reply: output, type: 'direct_rpc' }));
         }).catch(function(rpcErr) {
-          res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': CORS_ORIGIN });
           res.end(JSON.stringify({ reply: 'AI Bridge unavailable and RPC error: ' + rpcErr.message, type: 'error' }));
         });
       } catch (e) {
-        res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': CORS_ORIGIN });
         res.end(JSON.stringify({ reply: 'AI Bridge unavailable: ' + err.message, type: 'error' }));
       }
     });
@@ -207,13 +208,13 @@ function proxyToVnc(req, res) {
 
 // --- JSON response helper ---
 function jsonResponse(res, data, status) {
-  res.writeHead(status || 200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+  res.writeHead(status || 200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': CORS_ORIGIN });
   res.end(JSON.stringify(data));
 }
 
 // --- Main HTTP server ---
 var server = http.createServer(function(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN);
 
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {

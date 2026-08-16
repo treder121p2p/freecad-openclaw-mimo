@@ -12,8 +12,12 @@ import http.client
 import urllib.parse
 import re
 import time
+import signal
+import threading
 import traceback
+import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 
 # --- Config ---
 POLZA_HOST = os.environ.get("POLZA_HOST", "api.polza.ai")
@@ -37,6 +41,14 @@ POLZA_PATH = os.environ.get("POLZA_PATH", "/api/v1/chat/completions")
 FREECAD_RPC_HOST = os.environ.get("FREECAD_RPC_HOST", "localhost")
 FREECAD_RPC_PORT = int(os.environ.get("FREECAD_RPC_PORT", "9875"))
 BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "9877"))
+CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")
+ENABLE_SCREENSHOT = os.environ.get("ENABLE_SCREENSHOT", "1") == "1"
+ENABLE_LOG_FEEDBACK = os.environ.get("ENABLE_LOG_FEEDBACK", "1") == "1"
+MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "2"))
+
+# Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("bridge")
 
 # --- FreeCAD System Prompt ---
 FREECAD_SYSTEM_PROMPT = """You are FreeCAD AI Assistant. You generate FreeCAD Python code from natural language.
@@ -216,6 +228,11 @@ FreeCADGui.SendMsgToActiveView("ViewFit")
 """
 
 
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in separate threads."""
+    daemon_threads = True
+
+
 def rpc_call(method, args=None):
     """Call FreeCAD RPC server."""
     args = args or []
@@ -264,10 +281,10 @@ def rpc_call(method, args=None):
     return data
 
 
-def call_mimo(messages, system_prompt=None):
-    """Call MiMo via Polza API (OpenAI-compatible)."""
+def call_mimo(messages, system_prompt=None, model=None):
+    """Call MiMo via Polza API (OpenAI-compatible). Supports vision images."""
     body = {
-        "model": POLZA_MODEL,
+        "model": model or POLZA_MODEL,
         "messages": [],
         "temperature": 0.3,
         "max_tokens": 4096
@@ -317,6 +334,55 @@ def get_document_context():
     return []
 
 
+def get_freecad_logs(lines=30):
+    """Read recent FreeCAD log entries for error feedback."""
+    logs = []
+    for log_file in ["/var/log/freecad/freecad.log", "/var/log/freecad/mcp_addon.log"]:
+        try:
+            with open(log_file, 'r') as f:
+                all_lines = f.readlines()
+                recent = [l.strip() for l in all_lines[-lines:] if l.strip()]
+                if recent:
+                    logs.append(f"--- {log_file} ---")
+                    logs.extend(recent)
+        except Exception:
+            pass
+    return "\n".join(logs) if logs else ""
+
+
+def capture_screenshot():
+    """Take a screenshot of FreeCAD viewport via Python API."""
+    if not ENABLE_SCREENSHOT:
+        return None
+    try:
+        code = (
+            'import FreeCADGui, tempfile, os\n'
+            'path = os.path.join(tempfile.gettempdir(), "freecad_screenshot.png")\n'
+            'FreeCADGui.ActiveDocument.ActiveView.saveImage(path, 800, 600, "PNG")\n'
+            'print(path)'
+        )
+        result = rpc_call('execute_code', [code])
+        msg = result.get('message', '') if isinstance(result, dict) else str(result)
+        # Extract file path
+        for line in msg.split('\n'):
+            line = line.strip()
+            if line.endswith('.png') and os.path.exists(line):
+                return line
+    except Exception as e:
+        log.debug(f"Screenshot capture failed: {e}")
+    return None
+
+
+def screenshot_to_base64(path):
+    """Convert screenshot to base64 for MiMo vision."""
+    try:
+        import base64
+        with open(path, 'rb') as f:
+            return base64.b64encode(f.read()).decode('ascii')
+    except Exception:
+        return None
+
+
 def extract_json_from_response(text):
     """Extract JSON action from MiMo response."""
     # Try to find JSON block
@@ -349,7 +415,7 @@ def extract_json_from_response(text):
 
 class ChatHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # Suppress default logging
+        log.info(format % args)
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -394,6 +460,8 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         user_message = data.get('message', '')
         history = data.get('history', [])
+        model = data.get('model', POLZA_MODEL)
+        image_data = data.get('image', None)  # base64 data URL
 
         try:
             # Get document context
@@ -409,11 +477,30 @@ class ChatHandler(BaseHTTPRequestHandler):
             messages = []
             # Add conversation history (last 10 messages)
             for h in history[-10:]:
-                messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
-            messages.append({"role": "user", "content": user_message})
+                msg_entry = {"role": h.get("role", "user"), "content": h.get("content", "")}
+                # Include image from history if present
+                if h.get("image"):
+                    msg_entry["content"] = [
+                        {"type": "text", "text": h.get("content", "")},
+                        {"type": "image_url", "image_url": {"url": h["image"]}}
+                    ]
+                messages.append(msg_entry)
 
-            # Call MiMo
-            ai_response = call_mimo(messages, system)
+            # Build user message (with optional image)
+            if image_data:
+                user_msg = {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_message or "Опиши что изображено на картинке и создай 3D модель"},
+                        {"type": "image_url", "image_url": {"url": image_data}}
+                    ]
+                }
+            else:
+                user_msg = {"role": "user", "content": user_message}
+            messages.append(user_msg)
+
+            # Call MiMo (with model override)
+            ai_response = call_mimo(messages, system, model=model)
 
             # Try to extract structured action
             action = extract_json_from_response(ai_response)
@@ -432,30 +519,66 @@ class ChatHandler(BaseHTTPRequestHandler):
                 except:
                     pass
 
-                # Execute code in FreeCAD
-                try:
-                    rpc_result = rpc_call('execute_code', [safe_code])
-                    output = rpc_result.get('message', '') if isinstance(rpc_result, dict) else str(rpc_result)
+                # Execute code with auto-retry on errors
+                last_error = None
+                last_output = None
+                for attempt in range(MAX_RETRIES + 1):
+                    try:
+                        rpc_result = rpc_call('execute_code', [safe_code])
+                        output = rpc_result.get('message', '') if isinstance(rpc_result, dict) else str(rpc_result)
+                        last_output = output
 
-                    # Get updated context
-                    new_context = get_document_context()
+                        # Check for errors in output
+                        has_error = any(kw in output.lower() for kw in ['error', 'traceback', 'exception', 'nameerror', 'valueerror'])
 
-                    reply_text = "\u2705 " + desc + "\n\n```python\n" + code + "\n```\n\n**Result:**\n```\n" + output + "\n```"
-                    result = {
-                        "reply": reply_text,
-                        "code": code,
-                        "output": output,
-                        "objects": new_context,
-                        "type": "code_execution"
-                    }
-                except Exception as e:
-                    err_text = "\u274c Error:\n```python\n" + code + "\n```\n\n**Error:** " + str(e)
-                    result = {
-                        "reply": err_text,
-                        "code": code,
-                        "error": str(e),
-                        "type": "error"
-                    }
+                        if not has_error or attempt == MAX_RETRIES:
+                            # Success or max retries reached
+                            new_context = get_document_context()
+                            reply_text = "\u2705 " + desc + "\n\n```python\n" + code + "\n```\n\n**Result:**\n```\n" + output + "\n```"
+
+                            # Add FreeCAD log feedback if errors detected
+                            if has_error and ENABLE_LOG_FEEDBACK:
+                                fc_logs = get_freecad_logs(20)
+                                if fc_logs:
+                                    reply_text += "\n\n**FreeCAD Logs:**\n```\n" + fc_logs[-500:] + "\n```"
+
+                            result = {
+                                "reply": reply_text,
+                                "code": code,
+                                "output": output,
+                                "objects": new_context,
+                                "type": "code_execution"
+                            }
+                            break
+
+                        # Error detected — feed back to MiMo for correction
+                        last_error = output
+                        fc_logs = get_freecad_logs(10)
+                        error_context = f"\n\nThe previous code produced errors. Please fix and retry.\nError output:\n{output}\n"
+                        if fc_logs:
+                            error_context += f"FreeCAD logs:\n{fc_logs}\n"
+                        error_context += "Please generate corrected code."
+
+                        messages.append({"role": "assistant", "content": ai_response})
+                        messages.append({"role": "user", "content": error_context})
+                        log.info(f"Auto-retry {attempt + 1}/{MAX_RETRIES} with error feedback")
+                        ai_response = call_mimo(messages, system, model=model)
+                        action = extract_json_from_response(ai_response)
+                        if action and action.get('action') == 'code':
+                            code = action.get('code', '')
+                            safe_code = code.encode('ascii', 'ignore').decode('ascii')
+
+                    except Exception as e:
+                        last_error = str(e)
+                        if attempt == MAX_RETRIES:
+                            err_text = "\u274c Error:\n```python\n" + code + "\n```\n\n**Error:** " + str(e)
+                            result = {
+                                "reply": err_text,
+                                "code": code,
+                                "error": str(e),
+                                "type": "error"
+                            }
+                            break
 
             elif action and action.get('action') == 'clarify':
                 result = {
@@ -484,19 +607,29 @@ class ChatHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    print(f"FreeCAD AI Bridge starting on port {BRIDGE_PORT}")
-    print(f"  Model: {POLZA_MODEL}")
-    print(f"  FreeCAD RPC: {FREECAD_RPC_HOST}:{FREECAD_RPC_PORT}")
+    log.info(f"FreeCAD AI Bridge starting on port {BRIDGE_PORT}")
+    log.info(f"  Model: {POLZA_MODEL}")
+    log.info(f"  FreeCAD RPC: {FREECAD_RPC_HOST}:{FREECAD_RPC_PORT}")
+    log.info(f"  CORS origin: {CORS_ORIGIN}")
 
     # Test RPC connection
     try:
         rpc_call('ping')
-        print("  RPC: connected ✓")
+        log.info("  RPC: connected ✓")
     except:
-        print("  RPC: not available (will retry)")
+        log.warning("  RPC: not available (will retry)")
 
-    server = HTTPServer(('0.0.0.0', BRIDGE_PORT), ChatHandler)
-    print(f"  Bridge: http://0.0.0.0:{BRIDGE_PORT}")
+    server = ThreadedHTTPServer(('0.0.0.0', BRIDGE_PORT), ChatHandler)
+    log.info(f"  Bridge: http://0.0.0.0:{BRIDGE_PORT} (threaded)")
+
+    # Graceful shutdown
+    def shutdown_handler(signum, frame):
+        log.info("Shutting down bridge...")
+        threading.Thread(target=server.shutdown).start()
+
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+
     server.serve_forever()
 
 

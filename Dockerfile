@@ -2,12 +2,18 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Yekaterinburg \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
     DISPLAY=:1 \
     VNC_PORT=5900 \
     NOVNC_PORT=6080 \
     FREECAD_VERSION=1.1.3 \
     FREECAD_USER_HOME=/config \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    CORS_ORIGIN=* \
+    ENABLE_SCREENSHOT=1 \
+    ENABLE_LOG_FEEDBACK=1 \
+    MAX_RETRIES=2
 
 # Minimal deps: Xvfb, VNC, noVNC, wget, fuse + libs for FreeCAD AppImage
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -75,7 +81,7 @@ WORKDIR /workspace
 
 EXPOSE 6080 9875 9876 9877
 
-# Healthcheck: verify FreeCAD RPC is responding
+# Healthcheck: verify FreeCAD RPC + Bridge are responding
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD python3 -c "import http.client; c=http.client.HTTPConnection('localhost',9875,timeout=3); c.request('POST','/',b'<?xml version=\"1.0\"?><methodCall><methodName>ping</methodName><params></params></methodCall>',{'Content-Type':'text/xml'}); r=c.getresponse().read().decode(); exit(0 if '<boolean>1</boolean>' in r else 1)" || exit 1
 

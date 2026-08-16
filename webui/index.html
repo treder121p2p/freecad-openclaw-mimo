@@ -58,7 +58,7 @@
     }
     .chat-header-left h2 { font-size: 15px; font-weight: 600; color: #fff; }
     .chat-header-left .subtitle { font-size: 11px; color: #aaa; margin-top: 2px; }
-    .chat-header-actions { display: flex; gap: 6px; }
+    .chat-header-actions { display: flex; gap: 6px; align-items: center; }
     .header-btn {
       background: #1a1a2e;
       color: #aaa;
@@ -70,6 +70,35 @@
       transition: all 0.2s;
     }
     .header-btn:hover { background: #e94560; color: #fff; border-color: #e94560; }
+
+    /* Model Selector */
+    .model-selector {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .model-btn {
+      background: #1a1a2e;
+      color: #888;
+      border: 1px solid #333;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .model-btn.active {
+      background: #e94560;
+      color: #fff;
+      border-color: #e94560;
+    }
+    .model-btn:hover { border-color: #e94560; }
+    .model-btn .tag {
+      font-size: 8px;
+      opacity: 0.7;
+      margin-left: 2px;
+    }
 
     /* Step Tracker */
     .step-tracker {
@@ -183,6 +212,12 @@
       text-transform: uppercase;
     }
     .msg .error { color: #f44; }
+    .msg img {
+      max-width: 100%;
+      border-radius: 6px;
+      margin-top: 6px;
+      cursor: pointer;
+    }
 
     .chat-input {
       padding: 12px 14px;
@@ -225,11 +260,50 @@
     .chat-input button:hover { background: #c73e54; }
     .chat-input button:disabled { background: #555; cursor: not-allowed; }
 
+    .input-row {
+      padding: 0 14px 6px;
+      background: #0f3460;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
     .input-hint {
       font-size: 10px;
       color: #666;
-      padding: 0 14px 6px;
+      flex: 1;
+    }
+    .attach-btn {
+      background: #1a1a2e;
+      color: #aaa;
+      border: 1px solid #444;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .attach-btn:hover { background: #e94560; color: #fff; border-color: #e94560; }
+    .attach-btn.active { background: #2d6a4f; color: #fff; border-color: #2d6a4f; }
+
+    .image-preview {
+      display: none;
+      padding: 6px 14px;
       background: #0f3460;
+    }
+    .image-preview.active { display: flex; gap: 8px; align-items: center; }
+    .image-preview img {
+      max-height: 60px;
+      border-radius: 6px;
+      border: 1px solid #444;
+    }
+    .image-preview .remove-img {
+      background: #d32f2f;
+      color: #fff;
+      border: none;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
     }
 
     .typing-indicator {
@@ -264,7 +338,6 @@
     .chat-messages::-webkit-scrollbar-track { background: transparent; }
     .chat-messages::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
 
-    /* Session info */
     .session-info {
       font-size: 10px;
       color: #555;
@@ -288,12 +361,20 @@
     <div class="chat-panel">
       <div class="chat-header">
         <div class="chat-header-left">
-          <h2>💬 AI 3D Modeling Assistant</h2>
-          <div class="subtitle" id="header-subtitle">MiMo + FreeCAD — опишите задачу на русском</div>
+          <h2>💬 AI 3D Modeling</h2>
+          <div class="subtitle" id="header-subtitle">MiMo + FreeCAD — опишите задачу</div>
         </div>
         <div class="chat-header-actions">
-          <button class="header-btn" onclick="exportChat()" title="Экспорт чата">📥 Export</button>
-          <button class="header-btn" onclick="clearChat()" title="Очистить чат">🗑 Clear</button>
+          <div class="model-selector">
+            <button class="model-btn active" data-model="xiaomi/mimo-v2.5" onclick="selectModel(this)">
+              💰 MiMo <span class="tag">Дешёвая</span>
+            </button>
+            <button class="model-btn" data-model="xiaomi/mimo-v2.5-pro" onclick="selectModel(this)">
+              🔥 Pro <span class="tag">Сильная</span>
+            </button>
+          </div>
+          <button class="header-btn" onclick="exportChat()">📥</button>
+          <button class="header-btn" onclick="clearChat()">🗑</button>
         </div>
       </div>
 
@@ -317,12 +398,24 @@
 
       <div class="typing-indicator" id="typing">🤖 AI анализирует и генерирует код...</div>
 
+      <!-- Image Preview -->
+      <div class="image-preview" id="image-preview">
+        <img id="preview-img" src="" alt="preview">
+        <button class="remove-img" onclick="removeImage()">✕ Удалить</button>
+      </div>
+
       <div class="chat-input">
         <textarea id="user-input" placeholder="Опишите 3D модель... (Enter — отправить, Shift+Enter — перенос)" rows="3"
                   onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button id="send-btn" onclick="sendMessage()">Отправить</button>
       </div>
-      <div class="input-hint">Enter — отправить · Shift+Enter — новая строка · Описывайте пошагово для complex моделей</div>
+      <div class="input-row">
+        <span class="input-hint">Enter — отправить · Shift+Enter — перенос</span>
+        <label class="attach-btn" id="attach-btn" title="Прикрепить изображение">
+          📷 Фото
+          <input type="file" id="file-input" accept="image/*" style="display:none" onchange="handleImageUpload(event)">
+        </label>
+      </div>
 
       <div class="session-info">
         <span id="session-id">Session: ...</span>
@@ -341,18 +434,62 @@
     var conversationHistory = [];
     var sessionId = localStorage.getItem('freecad_session_id') || generateSessionId();
     var steps = [];
+    var currentModel = localStorage.getItem('freecad_model') || 'xiaomi/mimo-v2.5';
+    var pendingImage = null; // base64 data URL
 
     localStorage.setItem('freecad_session_id', sessionId);
     document.getElementById('session-id').textContent = 'Session: ' + sessionId.substring(0, 8);
 
+    // Restore model selection
+    document.querySelectorAll('.model-btn').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.model === currentModel);
+    });
+
     function generateSessionId() {
       return 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+    }
+
+    function selectModel(btn) {
+      document.querySelectorAll('.model-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      currentModel = btn.dataset.model;
+      localStorage.setItem('freecad_model', currentModel);
+      addMessage('system', 'Модель: ' + (currentModel.includes('Pro') ? 'MiMo v2.5 Pro (сильная)' : 'MiMo v2.5 (дешёвая)'));
     }
 
     // Auto-resize textarea
     function autoResize(el) {
       el.style.height = 'auto';
       el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+    }
+
+    // --- Image Upload ---
+    function handleImageUpload(event) {
+      var file = event.target.files[0];
+      if (!file) return;
+      if (!file.type.startsWith('image/')) {
+        addMessage('system', '❌ Можно загружать только изображения');
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        addMessage('system', '❌ Файл слишком большой (макс 10MB)');
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        pendingImage = e.target.result; // data:image/...;base64,...
+        document.getElementById('preview-img').src = pendingImage;
+        document.getElementById('image-preview').classList.add('active');
+        document.getElementById('attach-btn').classList.add('active');
+      };
+      reader.readAsDataURL(file);
+      event.target.value = '';
+    }
+
+    function removeImage() {
+      pendingImage = null;
+      document.getElementById('image-preview').classList.remove('active');
+      document.getElementById('attach-btn').classList.remove('active');
     }
 
     // Init VNC
@@ -362,21 +499,19 @@
       document.getElementById('vnc-status').style.color = '#0f0';
     });
 
-    // Load saved chat from localStorage
+    // Load saved chat
     loadSavedChat();
-
-    // Load server-side history
     loadServerHistory();
 
     // Check bridge status
     fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: 'ping', history: [], session_id: sessionId })
+      body: JSON.stringify({ message: 'ping', history: [], session_id: sessionId, model: currentModel })
     }).then(function(r) { return r.json(); }).then(function(d) {
       var el = document.getElementById('header-subtitle');
-      if (d.type === 'error') el.textContent = '⚠️ AI Bridge offline — direct RPC mode';
-      else el.textContent = 'MiMo + FreeCAD — опишите задачу на русском';
+      if (d.type === 'error') el.textContent = '⚠️ AI Bridge offline';
+      else el.textContent = 'MiMo + FreeCAD — опишите задачу';
     }).catch(function() {
       document.getElementById('header-subtitle').textContent = '⚠️ AI Bridge offline';
     });
@@ -385,15 +520,20 @@
       var div = document.createElement('div');
       div.className = 'msg ' + role;
       if (role === 'user') {
-        div.innerHTML = '<div class="label">Вы</div>' + escHtml(text);
+        var html = escHtml(text);
+        // Show attached image in message
+        if (pendingImage && !skipSave) {
+          html += '<br><img src="' + pendingImage + '" style="max-width:200px;border-radius:6px;margin-top:6px">';
+        }
+        div.innerHTML = '<div class="label">Вы</div>' + html;
       } else if (role === 'assistant') {
-        var html = text;
-        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+        var ahtml = text;
+        ahtml = ahtml.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
           return '<pre><code>' + escHtml(code) + '</code></pre>';
         });
-        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        div.innerHTML = '<div class="label">🤖 AI</div>' + html;
+        ahtml = ahtml.replace(/`([^`]+)`/g, '<code>$1</code>');
+        ahtml = ahtml.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        div.innerHTML = '<div class="label">🤖 AI</div>' + ahtml;
       } else {
         div.textContent = text;
       }
@@ -401,7 +541,11 @@
       messagesEl.scrollTop = messagesEl.scrollHeight;
 
       if (!skipSave) {
-        conversationHistory.push({ role: role, content: text, time: Date.now() });
+        var msgObj = { role: role, content: text, time: Date.now() };
+        if (role === 'user' && pendingImage) {
+          msgObj.image = pendingImage;
+        }
+        conversationHistory.push(msgObj);
         saveChat();
       }
       updateMsgCount();
@@ -448,7 +592,6 @@
 
     function detectWorkflow(text) {
       var lower = text.toLowerCase();
-      // Multi-step patterns
       if (lower.indexOf('вырез') !== -1 || lower.indexOf('boolean') !== -1 || lower.indexOf('объедин') !== -1 ||
           lower.indexOf('пересеч') !== -1 || lower.indexOf('cut') !== -1 || lower.indexOf('union') !== -1) {
         return {
@@ -486,13 +629,27 @@
 
     function sendMessage() {
       var text = inputEl.value.trim();
-      if (!text) return;
+      if (!text && !pendingImage) return;
 
       inputEl.value = '';
       inputEl.style.height = 'auto';
       sendBtn.disabled = true;
-      addMessage('user', text);
+      addMessage('user', text || '(изображение)');
       typingEl.classList.add('active');
+
+      // Build request
+      var requestBody = {
+        message: text,
+        history: conversationHistory.slice(-20),
+        session_id: sessionId,
+        model: currentModel
+      };
+
+      // Attach image if present
+      if (pendingImage) {
+        requestBody.image = pendingImage;
+        removeImage();
+      }
 
       // Detect multi-step workflow
       var workflow = detectWorkflow(text);
@@ -504,11 +661,7 @@
       fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          history: conversationHistory.slice(-20),
-          session_id: sessionId
-        })
+        body: JSON.stringify(requestBody)
       }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) {
           addMessage('system', '❌ Ошибка: ' + data.error);
@@ -516,7 +669,6 @@
         } else {
           addMessage('assistant', data.reply || 'Нет ответа');
           if (workflow) {
-            // Mark all steps as done if code executed successfully
             if (data.type === 'code_execution') {
               steps.forEach(function(s) { s.status = 'done'; s.statusText = '✓'; });
               renderSteps();
@@ -532,7 +684,6 @@
         typingEl.classList.remove('active');
         sendBtn.disabled = false;
         inputEl.focus();
-        // Auto-hide step tracker after 10s
         if (workflow) {
           setTimeout(function() { stepTracker.classList.remove('active'); }, 10000);
         }
@@ -544,7 +695,6 @@
       try {
         localStorage.setItem('freecad_chat_' + sessionId, JSON.stringify(conversationHistory));
       } catch(e) {}
-      // Also save to server
       fetch('/api/session/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -590,7 +740,6 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId })
       }).catch(function() {});
-      // New session
       sessionId = generateSessionId();
       localStorage.setItem('freecad_session_id', sessionId);
       document.getElementById('session-id').textContent = 'Session: ' + sessionId.substring(0, 8);
@@ -612,7 +761,6 @@
       document.getElementById('msg-count').textContent = conversationHistory.length + ' messages';
     }
 
-    // Focus input
     inputEl.focus();
   </script>
 </body>
