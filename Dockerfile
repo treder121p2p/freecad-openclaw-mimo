@@ -57,12 +57,15 @@ COPY freecad_mcp_settings.json /config/freecad_mcp_settings.json
 # Web UI (VNC viewer + chat panel)
 COPY webui/ /opt/freecad/webui/
 
+# AI Bridge (MiMo ↔ FreeCAD RPC)
+COPY bridge/ /opt/freecad/bridge/
+
 COPY start-freecad.sh /opt/freecad/start-freecad.sh
 COPY startup_rpc.py /opt/freecad/startup_rpc.py
 RUN chmod +x /opt/freecad/start-freecad.sh
 
 WORKDIR /workspace
 
-EXPOSE 5900 6080 9875 9876
+EXPOSE 5900 6080 9875 9876 9877
 
 CMD ["/opt/freecad/start-freecad.sh"]

@@ -93,4 +93,8 @@ echo "FreeCAD started with PID: $FREECAD_PID" >> /var/log/freecad/rpc_startup.lo
 node /opt/freecad/webui/server.js >> /var/log/freecad/webui.log 2>&1 &
 echo "Web UI started on port 9876" >> /var/log/freecad/rpc_startup.log
 
+# Start AI Bridge (MiMo ↔ FreeCAD RPC)
+python3 /opt/freecad/bridge/ai_bridge.py >> /var/log/freecad/bridge.log 2>&1 &
+echo "AI Bridge started on port 9877" >> /var/log/freecad/rpc_startup.log
+
 tail -f /var/log/freecad/*.log

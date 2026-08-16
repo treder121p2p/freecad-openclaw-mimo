@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FreeCAD — 3D Modeling + Chat</title>
+  <title>FreeCAD — AI 3D Modeling</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -13,15 +13,9 @@
       height: 100vh;
       overflow: hidden;
     }
+    .container { display: flex; height: 100vh; gap: 2px; }
 
-    /* Layout: 2/3 VNC + 1/3 Chat */
-    .container {
-      display: flex;
-      height: 100vh;
-      gap: 2px;
-    }
-
-    /* VNC Panel — 2/3 */
+    /* VNC Panel */
     .vnc-panel {
       flex: 2;
       background: #000;
@@ -45,7 +39,7 @@
       justify-content: space-between;
     }
 
-    /* Chat Panel — 1/3 */
+    /* Chat Panel */
     .chat-panel {
       flex: 1;
       display: flex;
@@ -54,22 +48,13 @@
       min-width: 320px;
       max-width: 480px;
     }
-
     .chat-header {
       background: #0f3460;
       padding: 14px 18px;
       border-bottom: 2px solid #e94560;
     }
-    .chat-header h2 {
-      font-size: 15px;
-      font-weight: 600;
-      color: #fff;
-    }
-    .chat-header .subtitle {
-      font-size: 11px;
-      color: #aaa;
-      margin-top: 2px;
-    }
+    .chat-header h2 { font-size: 15px; font-weight: 600; color: #fff; }
+    .chat-header .subtitle { font-size: 11px; color: #aaa; margin-top: 2px; }
 
     .chat-messages {
       flex: 1;
@@ -79,9 +64,8 @@
       flex-direction: column;
       gap: 10px;
     }
-
     .msg {
-      max-width: 90%;
+      max-width: 95%;
       padding: 10px 14px;
       border-radius: 12px;
       font-size: 13px;
@@ -123,11 +107,19 @@
       overflow-x: auto;
       font-size: 12px;
       margin-top: 6px;
+      border: 1px solid #333;
     }
     .msg code {
       font-family: 'Cascadia Code', 'Fira Code', monospace;
       font-size: 12px;
     }
+    .msg .result-label {
+      font-size: 10px;
+      color: #4ec9b0;
+      margin-top: 8px;
+      text-transform: uppercase;
+    }
+    .msg .error { color: #f44; }
 
     .chat-input {
       padding: 12px 14px;
@@ -151,9 +143,7 @@
       outline: none;
       transition: border-color 0.2s;
     }
-    .chat-input textarea:focus {
-      border-color: #e94560;
-    }
+    .chat-input textarea:focus { border-color: #e94560; }
     .chat-input button {
       background: #e94560;
       color: #fff;
@@ -179,12 +169,6 @@
     }
     .typing-indicator.active { display: block; }
 
-    /* Scrollbar */
-    .chat-messages::-webkit-scrollbar { width: 6px; }
-    .chat-messages::-webkit-scrollbar-track { background: transparent; }
-    .chat-messages::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
-
-    /* Quick actions */
     .quick-actions {
       padding: 8px 14px;
       display: flex;
@@ -201,16 +185,15 @@
       cursor: pointer;
       transition: all 0.2s;
     }
-    .quick-btn:hover {
-      background: #e94560;
-      color: #fff;
-      border-color: #e94560;
-    }
+    .quick-btn:hover { background: #e94560; color: #fff; border-color: #e94560; }
+
+    .chat-messages::-webkit-scrollbar { width: 6px; }
+    .chat-messages::-webkit-scrollbar-track { background: transparent; }
+    .chat-messages::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
   </style>
 </head>
 <body>
   <div class="container">
-    <!-- VNC Panel (2/3) -->
     <div class="vnc-panel">
       <div class="status-bar">
         <span>🖥 FreeCAD 3D View</span>
@@ -219,11 +202,10 @@
       <iframe id="vnc-frame" src="about:blank"></iframe>
     </div>
 
-    <!-- Chat Panel (1/3) -->
     <div class="chat-panel">
       <div class="chat-header">
-        <h2>💬 Задание для 3D моделирования</h2>
-        <div class="subtitle">Напишите задачу — AI создаст/модифицирует модель в FreeCAD</div>
+        <h2>💬 AI 3D Modeling Assistant</h2>
+        <div class="subtitle">MiMo + FreeCAD — опишите задачу на русском</div>
       </div>
 
       <div class="chat-messages" id="chat-messages">
@@ -233,15 +215,14 @@
       <div class="quick-actions">
         <button class="quick-btn" onclick="quickAction('Создай куб 10x10x10 мм')">📐 Куб</button>
         <button class="quick-btn" onclick="quickAction('Создай цилиндр r=5mm h=20mm')">🔵 Цилиндр</button>
-        <button class="quick-btn" onclick="quickAction('Покажи список объектов в документе')">📋 Объекты</button>
-        <button class="quick-btn" onclick="quickAction('Сделай скриншот текущего вида')">📸 Скрин</button>
+        <button class="quick-btn" onclick="quickAction('Покажи список объектов')">📋 Объекты</button>
         <button class="quick-btn" onclick="quickAction('Экспортируй в STL')">💾 STL</button>
       </div>
 
-      <div class="typing-indicator" id="typing">AI выполняет задачу...</div>
+      <div class="typing-indicator" id="typing">🤖 AI анализирует и генерирует код...</div>
 
       <div class="chat-input">
-        <textarea id="user-input" placeholder="Опишите задачу для 3D модели..." rows="1"
+        <textarea id="user-input" placeholder="Опишите 3D модель..." rows="1"
                   onkeydown="handleKey(event)"></textarea>
         <button id="send-btn" onclick="sendMessage()">Отправить</button>
       </div>
@@ -249,37 +230,49 @@
   </div>
 
   <script>
-    // --- Config ---
-    let VNC_URL = '';
-    const messagesEl = document.getElementById('chat-messages');
-    const inputEl = document.getElementById('user-input');
-    const sendBtn = document.getElementById('send-btn');
-    const typingEl = document.getElementById('typing');
+    var messagesEl = document.getElementById('chat-messages');
+    var inputEl = document.getElementById('user-input');
+    var sendBtn = document.getElementById('send-btn');
+    var typingEl = document.getElementById('typing');
+    var conversationHistory = [];
 
-    // --- Init VNC ---
-    // noVNC loads from same port (9876), WebSocket proxied via server upgrade handler
-    fetch('/api/config').then(r => r.json()).then(cfg => {
-      // noVNC auto-detects ws:// from page URL, path=/websockify
-      VNC_URL = `/vnc.html?autoconnect=1&resize=scale&path=/websockify`;
-      document.getElementById('vnc-frame').src = VNC_URL;
+    // Init VNC
+    fetch('/api/config').then(function(r) { return r.json(); }).then(function(cfg) {
+      document.getElementById('vnc-frame').src = '/vnc.html?autoconnect=1&resize=scale&path=/websockify';
       document.getElementById('vnc-status').textContent = 'Connected';
       document.getElementById('vnc-status').style.color = '#0f0';
     });
 
-    // --- Chat ---
-    let conversationHistory = [];
+    // Check bridge status
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'ping', history: [] })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      var el = document.querySelector('.chat-header .subtitle');
+      if (d.type === 'error') el.textContent = '⚠️ AI Bridge offline — direct RPC mode';
+      else el.textContent = 'MiMo + FreeCAD — опишите задачу на русском';
+    }).catch(function() {
+      document.querySelector('.chat-header .subtitle').textContent = '⚠️ AI Bridge offline';
+    });
 
     function addMessage(role, text) {
-      const div = document.createElement('div');
-      div.className = `msg ${role}`;
+      var div = document.createElement('div');
+      div.className = 'msg ' + role;
       if (role === 'user') {
-        div.innerHTML = `<div class="label">Вы</div>${escHtml(text)}`;
+        div.innerHTML = '<div class="label">Вы</div>' + escHtml(text);
       } else if (role === 'assistant') {
-        // Parse code blocks
-        let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-          return `<pre><code>${escHtml(code)}</code></pre>`;
+        // Parse code blocks and results
+        var html = text;
+        // Code blocks
+        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+          return '<pre><code>' + escHtml(code) + '</code></pre>';
         });
-        div.innerHTML = `<div class="label">AI</div>${html}`;
+        // Inline code
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        // Bold
+        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        div.innerHTML = '<div class="label">🤖 AI</div>' + html;
       } else {
         div.textContent = text;
       }
@@ -304,8 +297,8 @@
       }
     }
 
-    async function sendMessage() {
-      const text = inputEl.value.trim();
+    function sendMessage() {
+      var text = inputEl.value.trim();
       if (!text) return;
 
       inputEl.value = '';
@@ -315,27 +308,24 @@
 
       conversationHistory.push({ role: 'user', content: text });
 
-      try {
-        const resp = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, history: conversationHistory })
-        });
-        const data = await resp.json();
-
+      fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, history: conversationHistory })
+      }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) {
           addMessage('system', '❌ Ошибка: ' + data.error);
         } else {
-          addMessage('assistant', data.reply);
-          conversationHistory.push({ role: 'assistant', content: data.reply });
+          addMessage('assistant', data.reply || 'Нет ответа');
+          conversationHistory.push({ role: 'assistant', content: data.reply || '' });
         }
-      } catch (err) {
+      }).catch(function(err) {
         addMessage('system', '❌ Ошибка соединения: ' + err.message);
-      } finally {
+      }).finally(function() {
         typingEl.classList.remove('active');
         sendBtn.disabled = false;
         inputEl.focus();
-      }
+      });
     }
   </script>
 </body>
