@@ -257,8 +257,10 @@
     const typingEl = document.getElementById('typing');
 
     // --- Init VNC ---
+    // noVNC loads from same port (9876), WebSocket proxied via server upgrade handler
     fetch('/api/config').then(r => r.json()).then(cfg => {
-      VNC_URL = `http://${cfg.vncHost}:${cfg.vncPort}/vnc.html?autoconnect=1&resize=scale`;
+      // noVNC auto-detects ws:// from page URL, path=/websockify
+      VNC_URL = `/vnc.html?autoconnect=1&resize=scale&path=/websockify`;
       document.getElementById('vnc-frame').src = VNC_URL;
       document.getElementById('vnc-status').textContent = 'Connected';
       document.getElementById('vnc-status').style.color = '#0f0';
