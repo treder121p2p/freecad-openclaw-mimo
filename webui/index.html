@@ -334,6 +334,32 @@
     }
     .quick-btn:hover { background: #e94560; color: #fff; border-color: #e94560; }
 
+    .export-panel {
+      padding: 6px 14px;
+      background: #0d1b2a;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      border-top: 1px solid #333;
+    }
+    .export-label {
+      font-size: 11px;
+      color: #888;
+    }
+    .export-btn {
+      background: #1a1a2e;
+      color: #4ec9b0;
+      border: 1px solid #2d6a4f;
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .export-btn:hover { background: #2d6a4f; color: #fff; }
+    .export-btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+
     .chat-messages::-webkit-scrollbar { width: 6px; }
     .chat-messages::-webkit-scrollbar-track { background: transparent; }
     .chat-messages::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
@@ -392,8 +418,14 @@
         <button class="quick-btn" onclick="quickAction('Создай куб 10x10x10 мм')">📐 Куб</button>
         <button class="quick-btn" onclick="quickAction('Создай цилиндр r=5mm h=20mm')">🔵 Цилиндр</button>
         <button class="quick-btn" onclick="quickAction('Покажи список объектов')">📋 Объекты</button>
-        <button class="quick-btn" onclick="quickAction('Экспортируй в STL')">💾 STL</button>
         <button class="quick-btn" onclick="quickAction('Сделай вырез в кубе цилиндром')">✂️ Boolean</button>
+      </div>
+
+      <!-- Export Panel -->
+      <div class="export-panel">
+        <span class="export-label">💾 Экспорт:</span>
+        <button class="export-btn" onclick="exportFile('stl')">📥 STL</button>
+        <button class="export-btn" onclick="exportFile('3mf')">📥 3MF</button>
       </div>
 
       <div class="typing-indicator" id="typing">🤖 AI анализирует и генерирует код...</div>
@@ -755,6 +787,50 @@
       a.href = URL.createObjectURL(blob);
       a.download = 'freecad-chat-' + sessionId.substring(0, 8) + '.txt';
       a.click();
+    }
+
+    function exportFile(format) {
+      var btn = document.querySelector('.export-btn[onclick="exportFile(\'' + format + '\')"]');
+      if (btn) btn.disabled = true;
+      addMessage('system', '💾 Экспорт ' + format.toUpperCase() + '...');
+
+      var filename = 'freecad_model_' + Date.now();
+
+      fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: format, filename: filename })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.status === 'ok' && data.data) {
+          // Decode base64 and trigger download
+          var byteString = atob(data.data);
+          var ab = new ArrayBuffer(byteString.length);
+          var ia = new Uint8Array(ab);
+          for (var i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+          }
+          var mimeType = format === 'stl' ? 'model/stl' : 'model/3mf';
+          var blob = new Blob([ab], { type: mimeType });
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = data.filename || ('model.' + format);
+          a.click();
+          URL.revokeObjectURL(a.href);
+          addMessage('system', '✅ ' + data.filename + ' (' + formatBytes(data.size) + ') — сохранён');
+        } else {
+          addMessage('system', '❌ Ошибка экспорта: ' + (data.message || data.error || 'Unknown'));
+        }
+      }).catch(function(err) {
+        addMessage('system', '❌ Ошибка экспорта: ' + err.message);
+      }).finally(function() {
+        if (btn) btn.disabled = false;
+      });
+    }
+
+    function formatBytes(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / 1048576).toFixed(1) + ' MB';
     }
 
     function updateMsgCount() {

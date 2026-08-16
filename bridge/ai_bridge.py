@@ -436,6 +436,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.handle_chat()
         elif self.path == '/api/status':
             self.handle_status()
+        elif self.path == '/api/export':
+            self.handle_export()
         else:
             self.send_response(404)
             self.end_headers()
@@ -452,6 +454,95 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps(result).encode())
+
+    def handle_export(self):
+        """Export FreeCAD objects to STL or 3MF file."""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode())
+            
+            fmt = data.get('format', 'stl').lower()  # stl or 3mf
+            filename = data.get('filename', 'freecad_export')
+            
+            if fmt not in ('stl', '3mf'):
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Format must be 'stl' or '3mf'"}).encode())
+                return
+            
+            # Build export code
+            ext = 'stl' if fmt == 'stl' else '3mf'
+            export_path = '/tmp/' + filename + '.' + ext
+            
+            if fmt == 'stl':
+                export_code = (
+                    'import FreeCAD, Mesh\n'
+                    'doc = FreeCAD.activeDocument()\n'
+                    'if doc and doc.Objects:\n'
+                    '    shapes = [o for o in doc.Objects if hasattr(o, "Shape")]\n'
+                    '    if shapes:\n'
+                    "        Mesh.export(shapes, '" + export_path + "')\n"
+                    '        print("EXPORT_OK:" + "' + export_path + '")\n'
+                    '    else:\n'
+                    '        print("EXPORT_ERROR:No shape objects")\n'
+                    'else:\n'
+                    '    print("EXPORT_ERROR:No objects to export")'
+                )
+            else:  # 3mf
+                export_code = (
+                    'import FreeCAD, Mesh\n'
+                    'doc = FreeCAD.activeDocument()\n'
+                    'if doc and doc.Objects:\n'
+                    '    shapes = [o for o in doc.Objects if hasattr(o, "Shape")]\n'
+                    '    if shapes:\n'
+                    "        Mesh.export(shapes, '" + export_path + "')\n"
+                    '        print("EXPORT_OK:" + "' + export_path + '")\n'
+                    '    else:\n'
+                    '        print("EXPORT_ERROR:No shape objects")\n'
+                    'else:\n'
+                    '    print("EXPORT_ERROR:No objects to export")'
+                )
+            
+            # Execute export via RPC
+            rpc_result = rpc_call('execute_code', [export_code])
+            output = rpc_result.get('message', '') if isinstance(rpc_result, dict) else str(rpc_result)
+            
+            if 'EXPORT_OK:' in output:
+                # File exported successfully — read and return as base64
+                file_path = output.split('EXPORT_OK:')[1].strip()
+                import base64 as b64
+                with open(file_path, 'rb') as f:
+                    file_data = f.read()
+                
+                result = {
+                    "status": "ok",
+                    "format": fmt,
+                    "filename": f"{filename}.{ext}",
+                    "size": len(file_data),
+                    "data": b64.b64encode(file_data).decode('ascii')
+                }
+                log.info(f"Exported {fmt.upper()}: {filename}.{ext} ({len(file_data)} bytes)")
+            else:
+                result = {
+                    "status": "error",
+                    "message": output.strip()
+                }
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+            
+        except Exception as e:
+            log.error(f"Export error: {e}")
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
 
     def handle_chat(self):
         content_length = int(self.headers['Content-Length'])
