@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  freecad:
+    build: .
+    image: freecad-custom:latest
+    container_name: freecad
+    ports:
+      - "6080:6080"    # noVNC web interface
+      - "9876:9876"    # WebUI (VNC + Chat)
+      - "9877:9877"    # AI Bridge
+      # 9875 and 5900 are internal only (RPC, VNC localhost)
+    environment:
+      - POLZA_MODEL=xiaomi/mimo-v2.5
+      - CORS_ORIGIN=*
+      - ENABLE_SCREENSHOT=1
+      - ENABLE_LOG_FEEDBACK=1
+      - MAX_RETRIES=2
+    restart: unless-stopped
+    # Healthcheck is built into Dockerfile
