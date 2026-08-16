@@ -25,10 +25,11 @@ sleep 2
 Xvfb "$DISPLAY" -screen 0 1920x1080x24 -ac +extension GLX +render -noreset > /var/log/freecad/xvfb.log 2>&1 &
 fluxbox > /var/log/freecad/fluxbox.log 2>&1 &
 
-# VNC with auto-restart
+# VNC with auto-restart (localhost only — external access via WebUI proxy)
 (
   while true; do
-    x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "$VNC_PORT" >> /var/log/freecad/x11vnc.log 2>&1
+    x11vnc -display "$DISPLAY" -forever -shared -listen 127.0.0.1 -rfbport "$VNC_PORT" \
+      -rfbauth /opt/freecad/.vnc_pass >> /var/log/freecad/x11vnc.log 2>&1
     sleep 3
   done
 ) &
