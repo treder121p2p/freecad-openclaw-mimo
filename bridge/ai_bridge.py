@@ -567,18 +567,17 @@ class ChatHandler(BaseHTTPRequestHandler):
             system = FREECAD_SYSTEM_PROMPT + context_str
             messages = []
             # Add conversation history (last 10 messages)
+            # NOTE: Never send image_url in history — causes BAD_REQUEST on models without vision support
             for h in history[-10:]:
                 msg_entry = {"role": h.get("role", "user"), "content": h.get("content", "")}
-                # Include image from history if present
-                if h.get("image"):
-                    msg_entry["content"] = [
-                        {"type": "text", "text": h.get("content", "")},
-                        {"type": "image_url", "image_url": {"url": h["image"]}}
-                    ]
                 messages.append(msg_entry)
 
-            # Build user message (with optional image)
-            if image_data:
+            # Build user message (with optional image — only for current message)
+            if image_data and model in ('xiaomi/mimo-v2.5', 'xiaomi/mimo-v2.5-pro'):
+                # Only send image if model is known to support it
+                # For safety, strip image and send as text-only
+                user_msg = {"role": "user", "content": user_message or "Опиши что изображено и создай 3D модель"}
+            elif image_data:
                 user_msg = {
                     "role": "user",
                     "content": [
@@ -620,7 +619,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                         last_output = output
 
                         # Check for errors in output
-                        has_error = any(kw in output.lower() for kw in ['error', 'traceback', 'exception', 'nameerror', 'valueerror'])
+                        has_error = any(kw in output.lower() for kw in ['error', 'traceback', 'exception', 'nameerror', 'valueerror', 'syntaxerror', 'typerror'])
 
                         if not has_error or attempt == MAX_RETRIES:
                             # Success or max retries reached
