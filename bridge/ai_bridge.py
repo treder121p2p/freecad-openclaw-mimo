@@ -573,11 +573,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                 messages.append(msg_entry)
 
             # Build user message (with optional image — only for current message)
-            if image_data and model in ('xiaomi/mimo-v2.5', 'xiaomi/mimo-v2.5-pro'):
-                # Only send image if model is known to support it
-                # For safety, strip image and send as text-only
-                user_msg = {"role": "user", "content": user_message or "Опиши что изображено и создай 3D модель"}
-            elif image_data:
+            # v2.5 supports vision, v2.5-pro does NOT support image input via Polza
+            supports_vision = (model in ('qwen/qwen2.5-vl-72b-instruct',))
+            if image_data and supports_vision:
                 user_msg = {
                     "role": "user",
                     "content": [
@@ -585,6 +583,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                         {"type": "image_url", "image_url": {"url": image_data}}
                     ]
                 }
+            elif image_data and not supports_vision:
+                # Pro model doesn't support vision — send as text with note
+                user_msg = {"role": "user", "content": (user_message or "") + "\n\n[Изображение загружено, но модель Pro не поддерживает анализ картинок. Используйте MiMo v2.5 для работы с изображениями.]"}
             else:
                 user_msg = {"role": "user", "content": user_message}
             messages.append(user_msg)
