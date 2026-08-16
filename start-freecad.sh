@@ -8,47 +8,42 @@ export HOME=${HOME:-/config}
 
 mkdir -p "$HOME" /var/log/freecad
 
-# Clean stale X lock/socket
+# --- Phase 1: Kill stale processes (wait for them to die) ---
 if [ "$DISPLAY" = ":1" ]; then
   rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
 fi
 
-# Kill any stale processes
-pkill -f "Xvfb $DISPLAY" 2>/dev/null || true
-pkill -f "x11vnc -display $DISPLAY" 2>/dev/null || true
-pkill -f "websockify --web=/usr/share/novnc/" 2>/dev/null || true
-pkill -f fluxbox 2>/dev/null || true
-
-# X virtual display
-Xvfb "$DISPLAY" -screen 0 1920x1080x24 -ac +extension GLX +render -noreset > /var/log/freecad/xvfb.log 2>&1 &
-
-# Lightweight window manager
-fluxbox > /var/log/freecad/fluxbox.log 2>&1 &
-
-# VNC server (with auto-restart loop)
-(
-  while true; do
-    echo "Starting x11vnc..." >> /var/log/freecad/rpc_startup.log
-    x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "$VNC_PORT" >> /var/log/freecad/x11vnc.log 2>&1
-    echo "x11vnc exited, restarting in 3s..." >> /var/log/freecad/rpc_startup.log
-    sleep 3
-  done
-) &
-
-# noVNC websocket proxy (with auto-restart loop)
-(
-  while true; do
-    echo "Starting websockify..." >> /var/log/freecad/rpc_startup.log
-    websockify --web=/usr/share/novnc/ "$NOVNC_PORT" localhost:"$VNC_PORT" >> /var/log/freecad/novnc.log 2>&1
-    echo "websockify exited, restarting in 3s..." >> /var/log/freecad/rpc_startup.log
-    sleep 3
-  done
-) &
-
-# Wait for X to be ready
+pkill -f "Xvfb $DISPLAY" 2>/dev/null
+pkill -f "x11vnc -display $DISPLAY" 2>/dev/null
+pkill -f "websockify --web=/usr/share/novnc/" 2>/dev/null
+pkill -f fluxbox 2>/dev/null
+pkill -f "ai_bridge.py" 2>/dev/null
+pkill -f "node.*server.js" 2>/dev/null
 sleep 2
 
-# Find FreeCAD AppImage
+# --- Phase 2: Start X environment ---
+Xvfb "$DISPLAY" -screen 0 1920x1080x24 -ac +extension GLX +render -noreset > /var/log/freecad/xvfb.log 2>&1 &
+fluxbox > /var/log/freecad/fluxbox.log 2>&1 &
+
+# VNC with auto-restart
+(
+  while true; do
+    x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "$VNC_PORT" >> /var/log/freecad/x11vnc.log 2>&1
+    sleep 3
+  done
+) &
+
+# noVNC websocket proxy with auto-restart
+(
+  while true; do
+    websockify --web=/usr/share/novnc/ "$NOVNC_PORT" localhost:"$VNC_PORT" >> /var/log/freecad/novnc.log 2>&1
+    sleep 3
+  done
+) &
+
+sleep 2
+
+# --- Phase 3: Start FreeCAD GUI ---
 FREECAD_BIN=""
 if [ -x /opt/freecad/FreeCAD.AppImage ]; then
   FREECAD_BIN="/opt/freecad/FreeCAD.AppImage"
@@ -69,44 +64,52 @@ echo "- VNC:    0.0.0.0:${VNC_PORT}"
 echo "- noVNC:  http://0.0.0.0:${NOVNC_PORT}/vnc.html"
 echo "- RPC:    0.0.0.0:9875"
 
-# Start FreeCAD with GUI (background)
 HOME="$HOME" $FREECAD_BIN $EXTRA_ARGS > /var/log/freecad/freecad.log 2>&1 &
 FREECAD_PID=$!
+echo "FreeCAD started with PID: $FREECAD_PID" > /var/log/freecad/rpc_startup.log
 
-echo "FreeCAD started with PID: $FREECAD_PID" >> /var/log/freecad/rpc_startup.log
+# --- Phase 4: Wait for RPC (auto-started by InitGui.py) ---
+echo "Waiting for RPC server on :9875..." >> /var/log/freecad/rpc_startup.log
+RPC_READY=0
+for i in $(seq 1 90); do
+  if ! kill -0 "$FREECAD_PID" 2>/dev/null; then
+    echo "FreeCAD exited prematurely at iteration $i" >> /var/log/freecad/rpc_startup.log
+    break
+  fi
+  if python3 -c "
+import http.client
+c = http.client.HTTPConnection('localhost', 9875, timeout=2)
+body = '<?xml version=\"1.0\"?><methodCall><methodName>ping</methodName><params></params></methodCall>'
+c.request('POST', '/', body.encode(), {'Content-Type': 'text/xml'})
+r = c.getresponse().read().decode()
+exit(0 if '<boolean>1</boolean>' in r else 1)
+" 2>/dev/null; then
+    echo "RPC ready after ${i}x2 seconds (iteration $i)" >> /var/log/freecad/rpc_startup.log
+    RPC_READY=1
+    break
+  fi
+  sleep 2
+done
 
-# Background: wait for FreeCAD config dir (sign of full init), then start RPC
-(
-  echo "Waiting for FreeCAD to initialize..." >> /var/log/freecad/rpc_startup.log
-
-  for i in $(seq 1 120); do
-    if ! kill -0 "$FREECAD_PID" 2>/dev/null; then
-      echo "FreeCAD exited prematurely at iteration $i" >> /var/log/freecad/rpc_startup.log
-      exit 1
-    fi
-    if [ -d "$HOME/.config/FreeCAD" ] && [ $i -gt 10 ]; then
-      echo "FreeCAD config dir found at iteration $i" >> /var/log/freecad/rpc_startup.log
-      sleep 5
-      break
-    fi
-    sleep 2
-  done
-
-  echo "Starting RPC server via freecadcmd..." >> /var/log/freecad/rpc_startup.log
-
+if [ "$RPC_READY" -eq 0 ]; then
+  echo "WARNING: RPC not ready after 180s — starting via freecadcmd fallback" >> /var/log/freecad/rpc_startup.log
   HOME="$HOME" $FREECAD_BIN $EXTRA_ARGS --console /opt/freecad/startup_rpc.py \
     >> /var/log/freecad/rpc_startup.log 2>&1 &
+  echo "Fallback RPC process launched" >> /var/log/freecad/rpc_startup.log
+fi
 
-  echo "RPC process launched" >> /var/log/freecad/rpc_startup.log
-) &
-
-# Start web UI server
+# --- Phase 5: Start Web UI ---
 node /opt/freecad/webui/server.js >> /var/log/freecad/webui.log 2>&1 &
 echo "Web UI started on port 9876" >> /var/log/freecad/rpc_startup.log
 
-# Start AI Bridge (MiMo ↔ FreeCAD RPC)
-python3 /opt/freecad/bridge/ai_bridge.py >> /var/log/freecad/bridge.log 2>&1 &
-echo "AI Bridge started on port 9877" >> /var/log/freecad/rpc_startup.log
+# --- Phase 6: Start AI Bridge (with auto-restart) ---
+(
+  while true; do
+    python3 /opt/freecad/bridge/ai_bridge.py >> /var/log/freecad/bridge.log 2>&1
+    sleep 5
+  done
+) &
+echo "AI Bridge started on port 9877 (with restart loop)" >> /var/log/freecad/rpc_startup.log
 
-# Keep container alive
+# --- Keep container alive ---
 tail -f /var/log/freecad/*.log

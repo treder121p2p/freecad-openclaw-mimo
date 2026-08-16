@@ -20,3 +20,6 @@ Thumbs.db
 # FreeCAD temp
 *.FCStd1
 *.bak
+
+# Secrets
+.polza_key

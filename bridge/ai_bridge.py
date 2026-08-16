@@ -19,6 +19,19 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 POLZA_HOST = os.environ.get("POLZA_HOST", "api.polza.ai")
 POLZA_PORT = int(os.environ.get("POLZA_PORT", "443"))
 POLZA_API_KEY = os.environ.get("POLZA_API_KEY", "")
+if not POLZA_API_KEY:
+    for _key_path in ["/opt/freecad/.polza_key", "/root/.polza_key", os.path.expanduser("~/.polza_key")]:
+        try:
+            with open(_key_path) as _f:
+                POLZA_API_KEY = _f.read().strip()
+            if POLZA_API_KEY:
+                break
+        except Exception:
+            pass
+if not POLZA_API_KEY:
+    print("FATAL: No POLZA_API_KEY found. Set env var or create /opt/freecad/.polza_key", file=sys.stderr)
+    sys.exit(1)
+
 POLZA_MODEL = os.environ.get("POLZA_MODEL", "xiaomi/mimo-v2.5")
 POLZA_PATH = os.environ.get("POLZA_PATH", "/api/v1/chat/completions")
 FREECAD_RPC_HOST = os.environ.get("FREECAD_RPC_HOST", "localhost")
@@ -341,9 +354,16 @@ class ChatHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
+
+    def do_GET(self):
+        if self.path == '/api/status':
+            self.handle_status()
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_POST(self):
         if self.path == '/api/chat':

@@ -10,6 +10,8 @@ import FreeCAD
 class FilteredXMLRPCServer(SimpleXMLRPCServer):
     """XML-RPC server that filters connections by allowed IP addresses/subnets."""
 
+    allow_reuse_address = True
+
     def __init__(self, addr, allowed_ips_str="127.0.0.1", **kwargs):
         self._allowed_networks = _parse_allowed_ips(allowed_ips_str)
         super().__init__(addr, **kwargs)

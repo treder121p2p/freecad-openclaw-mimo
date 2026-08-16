@@ -60,6 +60,9 @@ COPY webui/ /opt/freecad/webui/
 # AI Bridge (MiMo ↔ FreeCAD RPC)
 COPY bridge/ /opt/freecad/bridge/
 
+# Polza API key (fallback for ai_bridge.py)
+COPY .polza_key /opt/freecad/.polza_key
+
 COPY start-freecad.sh /opt/freecad/start-freecad.sh
 COPY startup_rpc.py /opt/freecad/startup_rpc.py
 RUN chmod +x /opt/freecad/start-freecad.sh
