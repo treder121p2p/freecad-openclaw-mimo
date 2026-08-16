@@ -579,7 +579,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 user_msg = {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": user_message or "Опиши что изображено на картинке и создай 3D модель"},
+                        {"type": "text", "text": (user_message or "Опиши что изображено на картинке и создай 3D модель") + "\n\nОтвечай ТОЛЬКО на русском языке."},
                         {"type": "image_url", "image_url": {"url": image_data}}
                     ]
                 }
