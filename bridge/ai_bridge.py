@@ -201,6 +201,11 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
         if progress_callback:
             progress_callback(event_type, data)
 
+    # Сохраняем чертёж если передан
+    if image_data and not task.reference_image:
+        task.reference_image = image_data
+        log.info(f"Reference image saved for task {task.task_id}")
+
     notify("start", {"task_id": task.task_id, "message": user_message[:100]})
     if not model_id:
         model_id, model_profile, reason = select_model(user_message, has_image=bool(image_data))
@@ -365,7 +370,101 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
         parts.append(f"[{icon}] Step {r['step']}: {r['status']}")
         if r.get("error"): parts.append(f"   Error: {r['error'][:150]}")
 
+    # === ФИНАЛЬНОЕ СРАВНЕНИЕ С ЧЕРТЕЖОМ ===
+    if task.reference_image and ENABLE_VISUAL_CHECK:
+        final_result = final_blueprint_comparison(task, model_profile, progress_callback)
+        if final_result:
+            parts.append(f"\n🔍 Финальное сравнение: {final_result}")
+
     return {"reply": "\n".join(parts), "type": "multi_step", "task": task.to_dict(), "objects": task.objects_snapshot}
+
+def final_blueprint_comparison(task, model_profile, progress_callback=None):
+    """Финальное сравнение построенной модели с исходным чертежом.
+    Цикл: скриншот → сравнение → коррекция → повтор (макс 2 раунда).
+    """
+    if not task.reference_image or not model_profile or not model_profile.supports_vision:
+        return None
+
+    MAX_COMPARE_ROUNDS = 2
+    for round_num in range(MAX_COMPARE_ROUNDS):
+        task.comparison_rounds += 1
+        log.info(f"Final comparison round {round_num + 1}/{MAX_COMPARE_ROUNDS}")
+
+        if progress_callback:
+            progress_callback("visual_check", {"round": round_num + 1, "max": MAX_COMPARE_ROUNDS})
+
+        # Скриншот текущего состояния
+        sp = capture_screenshot()
+        if not sp:
+            log.warning("Final comparison: screenshot failed")
+            return "скриншот недоступен"
+
+        b64 = screenshot_to_base64(sp)
+        if not b64:
+            return "скриншот не удалось прочитать"
+
+        # Сравнение через vision-модель
+        compare_system = (
+            "Ты — инженер-конструктор. Сравни построенную 3D-модель (скриншот) с исходным чертёжом."
+            "\n\nПроанализируй:"
+            "\n1. Соответствует ли форма модели чертежу?"
+            "\n2. Есть ли расхождения в размерах, пропорциях, отверстиях, пазах?"
+            "\n3. Насколько точно модель повторяет чертёж?"
+            "\n\nОтвет ТОЛЬКО JSON:" +
+            '{"match": true/false, "accuracy": "high/medium/low", "differences": ["diff1"], "correction_code": "Python code to fix" or null, "summary": "brief summary in Russian"}'
+        )
+
+        compare_msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"Задача: {task.user_request}\n\nСравни построенную модель с чертежом."},
+                {"type": "image_url", "image_url": {"url": b64}},
+                {"type": "image_url", "image_url": {"url": task.reference_image}}
+            ]
+        }]
+
+        try:
+            vr = call_polza(compare_msgs, compare_system, model="anthropic/claude-sonnet-4.6")
+            log.info(f"Final comparison response: {vr[:400]}")
+            va = extract_json(vr)
+        except Exception as e:
+            log.error(f"Final comparison API error: {e}")
+            return f"ошибка API: {e}"
+
+        if not va:
+            return "модель не вернула структурированный ответ"
+
+        is_match = va.get("match", True)
+        accuracy = va.get("accuracy", "unknown")
+        summary = va.get("summary", "")
+        differences = va.get("differences", [])
+        correction_code = va.get("correction_code")
+
+        log.info(f"Final comparison: match={is_match}, accuracy={accuracy}, diffs={len(differences)}")
+
+        if is_match:
+            return f"✅ Совпадает (точность: {accuracy}). {summary}"
+
+        # Есть расхождения — нужна коррекция
+        if not correction_code:
+            return f"❌ Расхождения без кода коррекции: {'; '.join(differences[:3])}"
+
+        # Применяем коррекцию
+        log.info(f"Applying correction round {round_num + 1}: {correction_code[:200]}")
+        if progress_callback:
+            progress_callback("step_start", {"step": 99, "total": 100, "description": f"Коррекция по чертежу (раунд {round_num + 1})"})
+
+        safe_code = correction_code.encode('ascii', 'ignore').decode('ascii')
+        out, logs, err = execute_code_with_logs(safe_code)
+
+        if err:
+            log.warning(f"Correction failed: {err}")
+            return f"❌ Расхождения: {'; '.join(differences[:3])}. Коррекция упала: {err[:200]}"
+
+        log.info(f"Correction applied, rechecking...")
+
+    # После всех раундов
+    return f"⚠️ После {MAX_COMPARE_ROUNDS} раундов коррекции: {summary}"
 
 def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_ctx, progress_callback=None):
     code = action.get('code', '')
@@ -397,7 +496,14 @@ def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_c
         sp = capture_screenshot()
         if sp: step.screenshot_path = sp
     task.status = "completed"; task.objects_snapshot = get_document_objects()
-    reply = f"Done: {desc}\n\n```python\n{code}\n```\n\nResult:\n```\n{out or 'OK'}\n```"
+
+    # Финальное сравнение с чертежом
+    comparison_note = ""
+    if task.reference_image and ENABLE_VISUAL_CHECK:
+        comp = final_blueprint_comparison(task, model_profile)
+        if comp: comparison_note = f"\n\n🔍 Финальное сравнение: {comp}"
+
+    reply = f"Done: {desc}\n\n```python\n{code}\n```\n\nResult:\n```\n{out or 'OK'}\n```{comparison_note}"
     if step.retry_count > 0: reply += f"\n\nAuto-fixed x{step.retry_count}:\n```\n{logs[:300]}\n```"
     return {"reply": reply, "code": code, "output": out, "type": "code_execution", "task": task.to_dict(), "objects": task.objects_snapshot}
 

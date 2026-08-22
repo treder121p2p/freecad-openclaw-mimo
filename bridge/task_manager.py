@@ -57,6 +57,8 @@ class Task:
         self.updated_at = time.time()
         self.plan = None  # план от модели (список описаний шагов)
         self.final_result = None
+        self.reference_image = None  # base64 data URL исходного чертежа
+        self.comparison_rounds = 0  # сколько раундов сравнения прошли
         self.error_log = []  # все ошибки на протяжении задачи
         self.objects_snapshot = []  # состояние документа после последнего шага
 
