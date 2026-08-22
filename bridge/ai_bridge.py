@@ -294,24 +294,65 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
                             vs = "You are an engineer. Check the FreeCAD model on the screenshot against the task description. Reply JSON: " + '{"match": true/false, "issues": ["issue1"], "summary": "..."}'
                             vm = [{"role": "user", "content": [{"type": "text", "text": f"Task: {task.user_request}\nStep: {step.description}"}, {"type": "image_url", "image_url": {"url": b64}}]}]
                             vr = call_polza(vm, vs, model="anthropic/claude-sonnet-4.6")
+                            log.info(f"Visual check result: {vr[:300]}")
                             va = extract_json(vr)
                             if va:
                                 step.visual_match = va.get("match")
                                 if not va.get("match", True):
                                     issues = va.get("issues", [])
-                                    fix_fb = "Visual check failed:\n" + "\n".join(f"- {x}" for x in issues) + "\nFix step code."
+                                    summary = va.get("summary", "")
+                                    log.warning(f"Visual check FAILED: {summary} | Issues: {issues}")
+                                    fix_fb = f"Visual check found issues:\n{summary}\n\nIssues:\n" + "\n".join(f"- {x}" for x in issues) + "\n\nGenerate corrected Python code using h.* wrapper to fix these issues. Return JSON with action=code."
                                     step_msgs.append({"role": "user", "content": fix_fb})
                                     try:
                                         fr = call_polza(step_msgs, step_sys, model="anthropic/claude-sonnet-4.6")
+                                        log.info(f"Visual fix response: {fr[:300]}")
                                         fa = extract_json(fr)
                                         if fa and fa.get('action') == 'code':
                                             fc = fa.get('code', '').encode('ascii', 'ignore').decode('ascii')
+                                            log.info(f"Applying visual fix: {fc[:200]}")
                                             fo, fl, fe = execute_code_with_logs(fc, step)
-                                            if not fe: step.status = "success"; step.visual_match = True
-                                    except: pass
-                        except Exception as e: log.debug(f"Visual check error: {e}")
+                                            if not fe:
+                                                step.status = "success"; step.visual_match = True
+                                                log.info(f"Visual fix applied successfully")
+                                            else:
+                                                log.warning(f"Visual fix failed: {fe}")
+                                    except Exception as fix_e:
+                                        log.warning(f"Visual fix error: {fix_e}")
+                                else:
+                                    log.info(f"Visual check PASSED: {va.get('summary', 'OK')}")
+                        except Exception as e: log.warning(f"Visual check error: {e}")
+                else:
+                    log.info(f"Visual check: screenshot failed or no vision model")
+            else:
+                log.info(f"Visual check: skipped (ok={ok}, visual_check={ENABLE_VISUAL_CHECK})")
         else:
-            step.status = "skipped"; results.append({"step": i+1, "status": "skipped"})
+            skipped_detail = resp[:500] if resp else 'no response'
+            log.warning(f"Step {i+1} skipped - model returned non-code: {skipped_detail}")
+            # Retry with explicit code-only instruction
+            retry_msg = f"Step {i+1}: {step.description}\n\nIMPORTANT: You MUST return JSON with action=code. Generate Python code using h.* wrapper methods. No questions, no explanations - just the code."
+            step_msgs.append({"role": "user", "content": retry_msg})
+            try:
+                retry_resp = call_polza(step_msgs, step_sys, model=model_profile.model_id if model_profile else None)
+                retry_action = extract_json(retry_resp)
+                if retry_action and retry_action.get('action') == 'code':
+                    code = retry_action.get('code', '')
+                    step.code = code
+                    safe = code.encode('ascii', 'ignore').decode('ascii')
+                    out, logs, err = execute_code_with_logs(safe, step)
+                    if not err:
+                        step.status = "success"
+                        results.append({"step": i+1, "status": "success", "output": (out or '')[:500]})
+                    else:
+                        step.status = "error"
+                        task.error_log.append(err)
+                        results.append({"step": i+1, "status": "error", "error": err})
+                else:
+                    step.status = "skipped"
+                    results.append({"step": i+1, "status": "skipped", "model_response": retry_resp[:300]})
+            except Exception as e:
+                step.status = "skipped"
+                results.append({"step": i+1, "status": "skipped", "model_response": str(e)})
 
     task.status = "error" if task.failed_steps() else "completed"
     task.objects_snapshot = get_document_objects()

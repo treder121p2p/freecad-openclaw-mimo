@@ -170,8 +170,12 @@ Return JSON:
 
 Rules:
 - Max 10 steps
-- Each step = one logical operation
-- Complex boolean operations or drawings - add note for vision check
+- Each step = one clear, executable operation with h.* wrapper methods
+- For complex operations (arrays, rotations, profiles), break into smaller steps:
+  BAD: "Cut29 teeth through rotation"
+  GOOD: "Create one tooth profile shape" then "Duplicate tooth around center using loop"
+- Each step must be completable with a single code block
+- Always end with: "Check results with h.list_objects() and h.info()"
 """
 
 CODE_WITH_PLAN_PROMPT = """Execute the current plan step. Code must be self-contained.
