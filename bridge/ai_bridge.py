@@ -65,6 +65,9 @@ BASE_SYSTEM_PROMPT = """You are FreeCAD AI Assistant v2.0.
 15. NEVER put for/while on same line with semicolons
 16. NEVER use 'App' — always use 'FreeCAD'
 17. NEVER use 'Part.Shape' directly — use h.* wrapper methods
+18. For through-holes: use h.through_hole(base, cx, cy, radius) — NOT manual cylinder+cut
+19. After fuse/cut: pass remove_old=True to delete original objects
+20. For placement: use h.place(obj, x, y, z, rx, ry, rz) — NOT h.rotate(obj, x, y, z, rx, ry)
 """ + get_prompt_addition()
 
 # --- Polza API ---
