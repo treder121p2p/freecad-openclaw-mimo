@@ -13,6 +13,10 @@ from task_manager import TaskManager
 from model_router import select_model, get_system_prompt_for_model, MODELS
 from enhanced_logging import get_context_for_model, get_error_summary, get_recent_activity
 from prompts import get_task_prompts, detect_task_features, VISUAL_CHECK_PROMPT, FALLBACK_TEMPLATES
+from typed_tools import get_tools_description, execute_tool, parse_error
+from error_feedback import analyze_error, build_error_context, categorize_error_severity
+from multi_view import capture_multi_view, screenshots_to_base64, build_multi_view_comparison, verify_step
+from skills import get_skills_description, execute_skill, SKILLS
 
 # --- Config ---
 POLZA_HOST = os.environ.get("POLZA_HOST", "api.polza.ai")
@@ -68,7 +72,7 @@ BASE_SYSTEM_PROMPT = """You are FreeCAD AI Assistant v2.0.
 18. For through-holes: use h.through_hole(base, cx, cy, radius) — NOT manual cylinder+cut
 19. After fuse/cut: pass remove_old=True to delete original objects
 20. For placement: use h.place(obj, x, y, z, rx, ry, rz) — NOT h.rotate(obj, x, y, z, rx, ry)
-""" + get_prompt_addition()
+""" + get_prompt_addition() + "\n\n" + get_tools_description() + "\n\n" + get_skills_description()
 
 # --- Polza API ---
 def call_polza(messages, system_prompt=None, model=None, temperature=0.3, max_tokens=4096):
@@ -285,8 +289,10 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
                 if not err: step.status = "success"; ok = True; results.append({"step": i+1, "status": "success", "output": (out or "")[:500]}); break
                 step.retry_count += 1; task.error_log.append(err)
                 if attempt < MAX_RETRIES:
-                    fb = task_manager.build_error_feedback(task, err, logs)
-                    step_msgs.extend([{"role": "assistant", "content": resp}, {"role": "user", "content": fb}])
+                    severity = categorize_error_severity(err)
+                    error_ctx, analysis = build_error_context(err, safe, attempt+1, MAX_RETRIES+1)
+                    log.warning(f"Step {i+1} error ({severity}): {analysis['error_type']} — {analysis['suggestion']}")
+                    step_msgs.extend([{"role": "assistant", "content": resp}, {"role": "user", "content": error_ctx}])
                     try:
                         resp = call_polza(step_msgs, step_sys, model=model_profile.model_id if model_profile else None)
                         action = extract_json(resp)
