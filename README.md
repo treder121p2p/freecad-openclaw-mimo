@@ -2,106 +2,90 @@
 
 3D-моделирование в Docker с AI-управлением через чат.
 
-## Архитектура
+> **Вдохновение:** [ИИ-агент внутри КОМПАС-3D: пишет код, строит деталь и проверяет результат](https://habr.com/ru/articles/1072444/)
+> — подход с wrapper API, ReAct-циклом и визуальным фидбеком адаптирован для FreeCAD.
+
+## Архитектура v2.0
 
 ```
-┌─────────────────────────────────────────────┐
-│  Docker Container (freecad-custom)          │
-│                                             │
-│  ┌──────────────┐  ┌─────────────────────┐  │
-│  │ FreeCAD 1.1.3│  │ noVNC (port 6080)   │  │
-│  │ (GUI + RPC)  │←─│ WebSocket proxy     │  │
-│  │  port 9875   │  └─────────────────────┘  │
-│  └──────┬───────┘                           │
-│         │ XML-RPC                           │
-│  ┌──────┴───────┐  ┌─────────────────────┐  │
-│  │ Web UI       │  │ Chat Panel (1/3)    │  │
-│  │ port 9876    │  │ → AI tasks          │  │
-│  │ (2/3 VNC +   │  │ → FreeCAD RPC       │  │
-│  │  1/3 Chat)   │  └─────────────────────┘  │
-│  └──────────────┘                           │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Docker Container (freecad-custom)                  │
+│                                                     │
+│  ┌──────────────┐  ┌──────────────────────────────┐ │
+│  │ FreeCAD 1.1.3│  │ noVNC (6080)                 │ │
+│  │ (GUI + RPC)  │←─│ WebSocket proxy              │ │
+│  │  port 9875   │  └──────────────────────────────┘ │
+│  └──────┬───────┘                                   │
+│         │ XML-RPC                                   │
+│  ┌──────┴───────┐  ┌──────────────────────────────┐ │
+│  │ AI Bridge    │  │ ReAct-агент v2.0             │ │
+│  │ port 9877    │  │ • TaskManager (память задач) │ │
+│  │              │  │ • ModelRouter (оркестрация)   │ │
+│  │              │  │ • EnhancedLogging (логи)      │ │
+│  │              │  │ • Wrapper API (freecad_api)   │ │
+│  └──────────────┘  └──────────────────────────────┘ │
+│         ↑                                           │
+│  ┌──────┴───────┐                                   │
+│  │ Web UI       │  port 9876                        │
+│  │ VNC + Chat   │                                   │
+│  └──────────────┘                                   │
+└─────────────────────────────────────────────────────┘
          ↑
     http://localhost:9876
-         ↑
-    OpenClaw / MiMo v2.5
 ```
+
+## Ключевые идеи (из статьи)
+
+### 1. Wrapper API вместо голого API
+Модель работает с семантическими методами (`h.box()`, `h.cut()`, `h.fuse()`), а не с сырым FreeCAD Python API. Безопасно, понятно, легко расширять.
+
+### 2. ReAct-цикл: строим → смотрим → правим
+После каждого шага — скриншот → vision-модель сравнивает с задачей → при расхождении авто-исправление.
+
+### 3. Оркестрация моделей
+- **MiMo v2.5** — быстрая генерация кода (бесплатная)
+- **Claude Sonnet 4.6** — vision, сложные задачи, чертежи
+- **Qwen VL 72B** — сравнение изображений
+- **DeepSeek V4 Flash** — анализ ошибок
+
+### 4. Память задач
+Контекст сохраняется между запросами. Многоэтапные задачи не теряют состояние.
 
 ## Быстрый старт
 
 ```bash
-# Собрать образ
 docker build -t freecad-custom:latest .
-
-# Запустить
 docker run -d --name freecad \
-  -p 6080:6080 \
-  -p 9875:9875 \
-  -p 9876:9876 \
+  -p 6080:6080 -p 9875:9875 -p 9876:9876 \
   freecad-custom:latest
-
-# Открыть веб-интерфейс
-# http://localhost:9876
 ```
 
-## Доступные порты
+## Порты
 
-| Порт | Сервис | Описание |
-|------|--------|----------|
-| 6080 | noVNC | VNC-экран FreeCAD в браузере |
-| 9875 | XML-RPC | API для управления FreeCAD |
-| 9876 | Web UI | Единый интерфейс (экран + чат) |
+| Порт | Сервис |
+|------|--------|
+| 6080 | noVNC (VNC в браузере) |
+| 9875 | XML-RPC API |
+| 9876 | Web UI (VNC + Chat) |
+| 9877 | AI Bridge API |
 
-## Управление через RPC
+## Команды чата
 
-```python
-import xmlrpc.client
-proxy = xmlrpc.client.ServerProxy('http://localhost:9875')
+- `Создай куб 10x10x10 мм` → plan + code + visual check
+- `Построй по чертежу` + вложение → vision-анализ + пошаговое построение
+- `Сравни модель с чертежом` → vision-сравнение + авто-исправление
+- `Экспортируй в STL` → экспорт + скачивание
 
-# Выполнить Python-код в FreeCAD
-proxy.execute_code('import FreeCAD; print(FreeCAD.Version())')
-
-# Создать объекты
-proxy.execute_code('''
-import FreeCAD, Part
-doc = FreeCAD.activeDocument() or FreeCAD.newDocument("Model")
-box = doc.addObject("Part::Box", "Box")
-doc.recompute()
-''')
-```
-
-## Команды чата (примеры)
-
-- `Создай куб 10x10x10 мм`
-- `Создай цилиндр r=5mm h=20mm`
-- `Покажи список объектов`
-- `Удали Box`
-- `Перемести Box x=10 y=20`
-- `Экспортируй в STL`
-
-## MiMo + OpenClaw интеграция
-
-Модель MiMo v2.5 (Xiaomi) через Polza API используется для:
-- Интерпретации команд пользователя на естественном языке
-- Генерации Python-кода для FreeCAD
-- Автоматизации 3D-моделирования
-
-## Структура проекта
+## Структура bridge/
 
 ```
-freecad-custom/
-├── Dockerfile              # Ubuntu 22.04 + FreeCAD 1.1.3 AppImage
-├── start-freecad.sh        # Entrypoint: Xvfb, VNC, FreeCAD, WebUI
-├── startup_rpc.py          # RPC-сервер (XML-RPC, порт 9875)
-├── freecad_mcp_settings.json
-├── FreeCADMCP/             # MCP-аддон для FreeCAD
-│   ├── Init.py
-│   ├── InitGui.py
-│   └── rpc_server/         # Ядро RPC-сервера
-├── webui/                  # Веб-интерфейс
-│   ├── index.html          # Split: 2/3 VNC + 1/3 Chat
-│   └── server.js           # Node.js сервер + RPC-бридж
-└── README.md
+bridge/
+├── ai_bridge.py           # Основной ReAct-агент v2.0
+├── freecad_api.py         # Wrapper API (h.box, h.cut, h.fuse...)
+├── task_manager.py        # Память задач, пошаговое выполнение
+├── model_router.py        # Оркестрация моделей
+├── enhanced_logging.py    # Расширенное логирование FreeCAD
+└── run_bridge.sh          # Точка входа
 ```
 
 ## Лицензия

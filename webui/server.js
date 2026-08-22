@@ -152,6 +152,36 @@ function parseBody(req) {
   });
 }
 
+// --- Proxy to AI Bridge (SSE streaming) ---
+function proxyToBridgeSSE(req, res) {
+  var body = '';
+  req.on('data', function(chunk) { body += chunk; });
+  req.on('end', function() {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': CORS_ORIGIN
+    });
+    var bridgeReq = http.request({
+      hostname: BRIDGE_HOST, port: BRIDGE_PORT,
+      path: '/api/chat/stream', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, function(bridgeRes) {
+      bridgeRes.on('data', function(chunk) {
+        res.write(chunk);
+      });
+      bridgeRes.on('end', function() { res.end(); });
+    });
+    bridgeReq.on('error', function(err) {
+      res.write('event: error\ndata: ' + JSON.stringify({error: err.message}) + '\n\n');
+      res.end();
+    });
+    bridgeReq.write(body);
+    bridgeReq.end();
+  });
+}
+
 // --- Proxy to AI Bridge ---
 function proxyToBridge(req, res) {
   var body = '';
@@ -237,6 +267,11 @@ var server = http.createServer(function(req, res) {
   // --- API Routes ---
   if (parsed.pathname === '/api/config') {
     jsonResponse(res, { vncHost: 'localhost', vncPort: String(PORT) });
+    return;
+  }
+
+  if (parsed.pathname === '/api/chat/stream' && req.method === 'POST') {
+    proxyToBridgeSSE(req, res);
     return;
   }
 

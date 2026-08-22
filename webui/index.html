@@ -144,9 +144,13 @@
     .step-item.error .step-num { background: #d32f2f; color: #fff; }
     .step-item .step-text { flex: 1; color: #ccc; }
     .step-item.active .step-text { color: #fff; }
-    .step-item .step-status { font-size: 11px; }
-    .step-item.done .step-status { color: #4ec9b0; }
-    .step-item.error .step-status { color: #f44; }
+    .step-item .step-status { font-size: 11px; }                                      
+    .step-item.done .step-status { color: #4ec9b0; }                                 
+    .step-item.error .step-status { color: #f44; }                                    
+    .step-item.running .step-num { background: #e94560; color: #fff; animation: pulse 1s infinite; }
+    .step-item.visual .step-num { background: #7c3aed; color: #fff; }
+    .step-item.visual .step-status { color: #a78bfa; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
     .chat-messages {
       flex: 1;
@@ -439,13 +443,16 @@
         <div class="chat-header-actions">
           <div class="model-selector">
             <button class="model-btn active" data-model="xiaomi/mimo-v2.5" onclick="selectModel(this)">
-              💰 MiMo <span class="tag">Дешёвая</span>
+              💰 MiMo <span class="tag">Быстрая</span>
             </button>
             <button class="model-btn" data-model="xiaomi/mimo-v2.5-pro" onclick="selectModel(this)">
-              🔥 Pro <span class="tag">Сильная</span>
+              🔥 Pro <span class="tag">Сложные</span>
+            </button>
+            <button class="model-btn" data-model="anthropic/claude-sonnet-4.6" onclick="selectModel(this)">
+              🧠 Claude <span class="tag">Vision</span>
             </button>
             <button class="model-btn" data-model="qwen/qwen2.5-vl-72b-instruct" onclick="selectModel(this)">
-              👁 Vision <span class="tag">Картинки</span>
+              👁 Qwen <span class="tag">Картинки</span>
             </button>
           </div>
           <button class="header-btn" onclick="exportChat()">📥</button>
@@ -774,57 +781,107 @@
       addMessage('user', text || '(изображение)');
       typingEl.classList.add('active');
 
-      // Build request
       var requestBody = {
         message: text,
         history: conversationHistory.slice(-20),
         session_id: sessionId,
         model: currentModel
       };
-
-      // Attach image if present
       if (pendingImage) {
         requestBody.image = pendingImage;
         removeImage();
       }
 
-      // Detect multi-step workflow
-      var workflow = detectWorkflow(text);
-      if (workflow) {
-        startWorkflow(workflow.description, workflow.steps);
-        updateStep(1, 'active');
-      }
-
-      fetch('/api/chat', {
+      // Use SSE for real-time progress
+      fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody)
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error) {
-          addMessage('system', '❌ Ошибка: ' + data.error);
-          if (workflow) updateStep(1, 'error', 'Ошибка');
-        } else {
-          addMessage('assistant', data.reply || 'Нет ответа');
-          if (workflow) {
-            if (data.type === 'code_execution') {
-              steps.forEach(function(s) { s.status = 'done'; s.statusText = '✓'; });
-              renderSteps();
-            } else {
-              updateStep(1, 'done', '✓');
+      }).then(function(response) {
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+
+        function read() {
+          reader.read().then(function(result) {
+            if (result.done) return;
+            buffer += decoder.decode(result.value, { stream: true });
+            var lines = buffer.split('\n');
+            buffer = lines.pop();
+            var eventType = '';
+            for (var i = 0; i < lines.length; i++) {
+              var line = lines[i];
+              if (line.indexOf('event: ') === 0) {
+                eventType = line.substring(7);
+              } else if (line.indexOf('data: ') === 0) {
+                try {
+                  var data = JSON.parse(line.substring(6));
+                  handleSSEEvent(eventType, data);
+                } catch(e) {}
+              }
             }
-          }
+            read();
+          });
         }
+        read();
       }).catch(function(err) {
         addMessage('system', '❌ Ошибка соединения: ' + err.message);
-        if (workflow) updateStep(1, 'error', err.message);
       }).finally(function() {
         typingEl.classList.remove('active');
         sendBtn.disabled = false;
         inputEl.focus();
-        if (workflow) {
-          setTimeout(function() { stepTracker.classList.remove('active'); }, 10000);
-        }
       });
+    }
+
+    function handleSSEEvent(type, data) {
+      if (type === 'start') {
+        stepTracker.classList.add('active');
+      } else if (type === 'planning') {
+        addMessage('system', '🧠 Планирование... (модель: ' + (data.model || 'auto') + ')');
+      } else if (type === 'step_start') {
+        // Update step tracker from server
+        if (data.total && steps.length !== data.total) {
+          steps = [];
+          for (var i = 1; i <= data.total; i++) {
+            steps.push({ num: i, text: i === data.step ? data.description : 'Шаг ' + i, status: 'pending' });
+          }
+        }
+        if (steps.length > 0 && data.step <= steps.length) {
+          // Mark previous as done
+          for (var j = 0; j < data.step - 1; j++) {
+            if (steps[j].status !== 'error') steps[j].status = 'done';
+          }
+          steps[data.step - 1].status = 'active';
+          steps[data.step - 1].text = data.description || steps[data.step - 1].text;
+          renderSteps();
+        }
+        addMessage('system', '🔄 Шаг ' + data.step + '/' + data.total + ': ' + data.description);
+      } else if (type === 'step_done') {
+        if (data.step && data.step <= steps.length) {
+          steps[data.step - 1].status = data.error ? 'error' : 'done';
+          steps[data.step - 1].statusText = data.error ? '✗' : '✓';
+          renderSteps();
+        }
+      } else if (type === 'visual_check') {
+        addMessage('system', '👁 Визуальная проверка: ' + (data.match ? '✅ Совпадает' : '❌ Расхождение'));
+      } else if (type === 'done') {
+        addMessage('assistant', data.reply || 'Готово');
+        conversationHistory.push({ role: 'assistant', content: data.reply });
+        saveChat();
+        if (data.task && data.task.steps) {
+          // Sync final step states
+          data.task.steps.forEach(function(s, idx) {
+            if (idx < steps.length) {
+              steps[idx].status = s.status === 'success' ? 'done' : s.status === 'error' ? 'error' : 'done';
+              steps[idx].statusText = s.status === 'success' ? '✓' : s.status === 'error' ? '✗' : '';
+            }
+          });
+          renderSteps();
+        }
+        setTimeout(function() { stepTracker.classList.remove('active'); }, 15000);
+      } else if (type === 'error') {
+        addMessage('system', '❌ ' + (data.reply || data.message || 'Ошибка'));
+      }
     }
 
     // --- Chat persistence ---
