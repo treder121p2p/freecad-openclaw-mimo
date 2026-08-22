@@ -63,6 +63,8 @@ BASE_SYSTEM_PROMPT = """You are FreeCAD AI Assistant v2.0.
 13. Use descriptive names: "Base_Plate", "Mount_Bracket"
 14. If dimensions not given - ask first
 15. NEVER put for/while on same line with semicolons
+16. NEVER use 'App' — always use 'FreeCAD'
+17. NEVER use 'Part.Shape' directly — use h.* wrapper methods
 """ + get_prompt_addition()
 
 # --- Polza API ---
@@ -435,6 +437,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             '/api/execute': self._handle_execute,
             '/api/feedback': self._handle_feedback,
             '/api/task/clear': self._handle_task_clear,
+            '/api/new': self._handle_new,
         }
         handler = routes.get(self.path)
         if handler: handler()
@@ -454,6 +457,28 @@ class ChatHandler(BaseHTTPRequestHandler):
     def _handle_task_clear(self):
         with task_manager._lock: task_manager._tasks.clear()
         self._json({"ok": True})
+
+    def _handle_new(self):
+        global wrapper_initialized
+        try:
+            try:
+                rpc_call('execute_code', [
+                    'import FreeCAD\n'
+                    'doc = FreeCAD.activeDocument()\n'
+                    'if doc:\n'
+                    '    for obj in doc.Objects[:]: doc.removeObject(obj.Name)\n'
+                    '    doc.recompute()\n'
+                    'else:\n'
+                    '    doc = FreeCAD.newDocument("AIDoc")'
+                ])
+            except Exception as e:
+                log.warning(f"Clear doc: {e}")
+            wrapper_initialized = False
+            ensure_document()
+            with task_manager._lock: task_manager._tasks.clear()
+            self._json({"ok": True, "message": "New document + tasks cleared"})
+        except Exception as e:
+            self._json({"ok": False, "error": str(e)}, 500)
 
     def _handle_chat(self):
         data = json.loads(self._body().decode())

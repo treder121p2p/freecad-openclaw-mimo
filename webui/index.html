@@ -476,6 +476,7 @@
         <button class="quick-btn" onclick="quickAction('Покажи список объектов')">📋 Объекты</button>
         <button class="quick-btn" onclick="quickAction('Сделай вырез в кубе цилиндром')">✂️ Boolean</button>
         <button class="quick-btn run-code-btn" onclick="toggleCodeEditor()">▶️ Код</button>
+        <button class="quick-btn new-btn" onclick="newDocument()" style="background:#7c3aed;border-color:#7c3aed;">🆕 Новый</button>
       </div>
 
       <!-- Code Editor (hidden by default) -->
@@ -919,6 +920,25 @@
             });
           }
         }).catch(function() {});
+    }
+
+    function newDocument() {
+      if (!confirm('Новый документ? Все объекты FreeCAD и история задач будут удалены.')) return;
+      fetch('/api/new', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.ok) {
+            addMessage('system', '🆕 Новый документ создан. Всё очищено.');
+            conversationHistory = [];
+            steps = [];
+            stepTracker.classList.remove('active');
+            stepsList.innerHTML = '';
+            saveChat();
+          } else {
+            addMessage('system', '❌ Ошибка: ' + (data.error || 'unknown'));
+          }
+        })
+        .catch(function(e) { addMessage('system', '❌ Ошибка: ' + e.message); });
     }
 
     function clearChat() {

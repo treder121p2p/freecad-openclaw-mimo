@@ -295,6 +295,11 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
+  if (parsed.pathname === '/api/new' && req.method === 'POST') {
+    proxyToBridge(req, res);
+    return;
+  }
+
   if (parsed.pathname === '/api/rpc-test') {
     rpcCall('execute_code', ['import FreeCAD; print(FreeCAD.Version())']).then(function(result) {
       jsonResponse(res, { ok: true, result: result });
