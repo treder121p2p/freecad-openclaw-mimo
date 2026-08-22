@@ -214,7 +214,7 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
 
     # Динамические промпты по типу задачи
     needs_bool, needs_arr, needs_mod = detect_task_features(user_message)
-    task_prompts = get_task_prompts(task_type="drawing" if "чертеж" in user_message.lower() or has_image else "modeling",
+    task_prompts = get_task_prompts(task_type="drawing" if "чертеж" in user_message.lower() or bool(image_data) else "modeling",
                                      needs_boolean=needs_bool, needs_array=needs_arr, needs_modifiers=needs_mod)
 
     # Plan

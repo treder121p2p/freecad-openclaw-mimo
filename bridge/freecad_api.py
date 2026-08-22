@@ -28,13 +28,24 @@ class FreeCADHelper:
         self.doc = doc
         self._objects = []
 
+    def _safe_doc(self):
+        """Get document safely - recreate if deleted."""
+        try:
+            if self.doc is None or not self.doc.Name:
+                raise ValueError('doc is None')
+            _ = self.doc.Objects  # test access
+            return self.doc
+        except:
+            self.doc = FreeCAD.activeDocument() or FreeCAD.newDocument('AIDoc')
+            return self.doc
+
     def _add(self, obj):
-        self.doc.recompute()
+        self._safe_doc().recompute()
         return obj
 
     def box(self, length=10, width=10, height=10, name=None):
         """Создать параллелепипед (мм)."""
-        b = self.doc.addObject("Part::Box", name or f"Box_{len(self._objects)}")
+        b = self._safe_doc().addObject("Part::Box", name or f"Box_{len(self._objects)}")
         b.Length = float(length)
         b.Width = float(width)
         b.Height = float(height)
@@ -43,7 +54,7 @@ class FreeCADHelper:
 
     def cylinder(self, radius=5, height=20, name=None):
         """Создать цилиндр (мм)."""
-        c = self.doc.addObject("Part::Cylinder", name or f"Cyl_{len(self._objects)}")
+        c = self._safe_doc().addObject("Part::Cylinder", name or f"Cyl_{len(self._objects)}")
         c.Radius = float(radius)
         c.Height = float(height)
         self._objects.append(c)
@@ -51,14 +62,14 @@ class FreeCADHelper:
 
     def sphere(self, radius=10, name=None):
         """Создать сферу (мм)."""
-        s = self.doc.addObject("Part::Sphere", name or f"Sphere_{len(self._objects)}")
+        s = self._safe_doc().addObject("Part::Sphere", name or f"Sphere_{len(self._objects)}")
         s.Radius = float(radius)
         self._objects.append(s)
         return self._add(s)
 
     def cone(self, radius1=5, radius2=0, height=15, name=None):
         """Создать конус (мм)."""
-        c = self.doc.addObject("Part::Cone", name or f"Cone_{len(self._objects)}")
+        c = self._safe_doc().addObject("Part::Cone", name or f"Cone_{len(self._objects)}")
         c.Radius1 = float(radius1)
         c.Radius2 = float(radius2)
         c.Height = float(height)
@@ -67,7 +78,7 @@ class FreeCADHelper:
 
     def torus(self, radius1=10, radius2=3, name=None):
         """Создать тор (мм). radius1=большой, radius2=малый."""
-        t = self.doc.addObject("Part::Torus", name or f"Torus_{len(self._objects)}")
+        t = self._safe_doc().addObject("Part::Torus", name or f"Torus_{len(self._objects)}")
         t.Radius1 = float(radius1)
         t.Radius2 = float(radius2)
         self._objects.append(t)
@@ -76,13 +87,13 @@ class FreeCADHelper:
     def move(self, obj, x=0, y=0, z=0):
         """Переместить объект на (x, y, z) мм."""
         obj.Placement.Base = FreeCAD.Vector(float(x), float(y), float(z))
-        self.doc.recompute()
+        self._safe_doc().recompute()
         return obj
 
     def rotate(self, obj, rx=0, ry=0, rz=0):
         """Повернуть объект (углы Эйлера в градусах)."""
         obj.Placement.Rotation = FreeCAD.Rotation(float(rx), float(ry), float(rz))
-        self.doc.recompute()
+        self._safe_doc().recompute()
         return obj
 
     def place(self, obj, x=0, y=0, z=0, rx=0, ry=0, rz=0):
@@ -91,13 +102,13 @@ class FreeCADHelper:
             FreeCAD.Vector(float(x), float(y), float(z)),
             FreeCAD.Rotation(float(rx), float(ry), float(rz))
         )
-        self.doc.recompute()
+        self._safe_doc().recompute()
         return obj
 
     def fuse(self, obj1, obj2, name=None):
         """Объединение (Boolean Union)."""
         result = obj1.Shape.fuse(obj2.Shape)
-        feat = self.doc.addObject("Part::Feature", name or f"Fuse_{len(self._objects)}")
+        feat = self._safe_doc().addObject("Part::Feature", name or f"Fuse_{len(self._objects)}")
         feat.Shape = result
         self._objects.append(feat)
         return self._add(feat)
@@ -105,7 +116,7 @@ class FreeCADHelper:
     def cut(self, base, tool, name=None):
         """Вычитание (Boolean Cut)."""
         result = base.Shape.cut(tool.Shape)
-        feat = self.doc.addObject("Part::Feature", name or f"Cut_{len(self._objects)}")
+        feat = self._safe_doc().addObject("Part::Feature", name or f"Cut_{len(self._objects)}")
         feat.Shape = result
         self._objects.append(feat)
         return self._add(feat)
@@ -113,14 +124,14 @@ class FreeCADHelper:
     def intersect(self, obj1, obj2, name=None):
         """Пересечение (Boolean Common)."""
         result = obj1.Shape.common(obj2.Shape)
-        feat = self.doc.addObject("Part::Feature", name or f"Intersect_{len(self._objects)}")
+        feat = self._safe_doc().addObject("Part::Feature", name or f"Intersect_{len(self._objects)}")
         feat.Shape = result
         self._objects.append(feat)
         return self._add(feat)
 
     def fillet(self, obj, radius=2.0, name=None):
         """Скруглить все рёбра объекта."""
-        fillet = self.doc.addObject("Part::Fillet", name or f"Fillet_{len(self._objects)}")
+        fillet = self._safe_doc().addObject("Part::Fillet", name or f"Fillet_{len(self._objects)}")
         fillet.Base = obj
         fillet.Edges = [(i, float(radius), float(radius)) for i in range(len(obj.Shape.Edges))]
         self._objects.append(fillet)
@@ -128,7 +139,7 @@ class FreeCADHelper:
 
     def chamfer(self, obj, size=1.0, name=None):
         """Снять фаску со всех рёбер."""
-        chamfer = self.doc.addObject("Part::Chamfer", name or f"Chamfer_{len(self._objects)}")
+        chamfer = self._safe_doc().addObject("Part::Chamfer", name or f"Chamfer_{len(self._objects)}")
         chamfer.Base = obj
         chamfer.Size = float(size)
         self._objects.append(chamfer)
@@ -154,20 +165,20 @@ class FreeCADHelper:
         return [
             {"name": o.Name, "type": o.TypeId,
              "pos": str(o.Placement.Base) if hasattr(o, "Placement") else "N/A"}
-            for o in self.doc.Objects
+            for o in self._safe_doc().Objects
         ]
 
     def clear(self):
         """Удалить все объекты."""
         for obj in self.doc.Objects[:]:
-            self.doc.removeObject(obj.Name)
+            self._safe_doc().removeObject(obj.Name)
         self._objects.clear()
-        self.doc.recompute()
+        self._safe_doc().recompute()
 
     def export_stl(self, path="/tmp/export.stl"):
         """Экспорт в STL."""
         import Mesh
-        shapes = [o for o in self.doc.Objects if hasattr(o, "Shape")]
+        shapes = [o for o in self._safe_doc().Objects if hasattr(o, "Shape")]
         if shapes:
             Mesh.export(shapes, path)
             return f"EXPORT_OK:{path}"
@@ -176,7 +187,7 @@ class FreeCADHelper:
     def export_step(self, path="/tmp/export.step"):
         """Экспорт в STEP."""
         import Import
-        shapes = [o for o in self.doc.Objects if hasattr(o, "Shape")]
+        shapes = [o for o in self._safe_doc().Objects if hasattr(o, "Shape")]
         if shapes:
             Import.export(shapes, path)
             return f"EXPORT_OK:{path}"
