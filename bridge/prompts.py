@@ -160,6 +160,51 @@ VISUAL_CHECK_PROMPT = """## ВИЗУАЛЬНЫЙ КОНТРОЛЬ (ОБЯЗАТ�
 """
 
 
+# === Fallback code templates for common operations ===
+
+FALLBACK_TEMPLATES = {
+    "hole": (
+        '# Template: cut a hole through an object\n'
+        '# Assumes: base_obj exists, hole_params = (radius, depth)\n'
+        'hole = h.cylinder({radius}, {depth}, name="Hole")\n'
+        'h.move(hole, x={cx}, y={cy}, z={z_off})\n'
+        'result = h.cut(base_obj, hole, name="Base_With_Hole")\n'
+    ),
+    "gear_teeth": (
+        '# Template: approximate gear teeth as cylinders around a circle\n'
+        '# tooth_count, tooth_r, tooth_h, center_r, base_obj\n'
+        'import math\n'
+        'for i in range({count}):\n'
+        '    angle = 2 * math.pi * i / {count}\n'
+        '    tx = {center_r} * math.cos(angle)\n'
+        '    ty = {center_r} * math.sin(angle)\n'
+        '    tooth = h.cylinder({tooth_r}, {tooth_h}, name=f"Tooth_{{i}}")\n'
+        '    h.move(tooth, x=tx, y=ty, z={z_off})\n'
+        '    base_obj = h.fuse(base_obj, tooth)\n'
+    ),
+    "groove": (
+        '# Template: cut grooves around a cylinder\n'
+        '# groove_count, groove_w, groove_d, center_r, base_obj\n'
+        'import math\n'
+        'for i in range({count}):\n'
+        '    angle = 2 * math.pi * i / {count}\n'
+        '    gx = {center_r} * math.cos(angle)\n'
+        '    gy = {center_r} * math.sin(angle)\n'
+        '    groove = h.box({groove_w}, {groove_d}, {height}, name=f"Groove_{{i}}")\n'
+        '    h.place(groove, x=gx, y=gy, z={z_off}, rz=math.degrees(angle))\n'
+        '    base_obj = h.cut(base_obj, groove)\n'
+    ),
+}
+
+
+def get_fallback_code(operation, params):
+    """Get fallback code template for an operation."""
+    template = FALLBACK_TEMPLATES.get(operation)
+    if template:
+        return template.format(**params)
+    return None
+
+
 def get_task_prompts(task_type, needs_boolean=False, needs_array=False, needs_modifiers=False):
     """Собрать релевантные промпты для задачи."""
     parts = []

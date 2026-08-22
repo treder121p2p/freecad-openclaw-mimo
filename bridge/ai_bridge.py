@@ -12,7 +12,7 @@ from freecad_api import get_wrapper_code, get_prompt_addition
 from task_manager import TaskManager
 from model_router import select_model, get_system_prompt_for_model, MODELS
 from enhanced_logging import get_context_for_model, get_error_summary, get_recent_activity
-from prompts import get_task_prompts, detect_task_features, VISUAL_CHECK_PROMPT
+from prompts import get_task_prompts, detect_task_features, VISUAL_CHECK_PROMPT, FALLBACK_TEMPLATES
 
 # --- Config ---
 POLZA_HOST = os.environ.get("POLZA_HOST", "api.polza.ai")
@@ -146,15 +146,19 @@ def execute_code_with_logs(code, step=None):
 
 def capture_screenshot():
     if not ENABLE_SCREENSHOT: return None
-    try:
-        code = 'import FreeCADGui, tempfile, os; path = os.path.join(tempfile.gettempdir(), "freecad_screenshot.png"); FreeCADGui.ActiveDocument.ActiveView.saveImage(path, 800, 600, "PNG"); print(path)'
-        result = rpc_call('execute_code', [code])
-        msg = result.get('message', '') if isinstance(result, dict) else str(result)
-        for line in msg.split('\n'):
-            line = line.strip()
-            if line.endswith('.png') and os.path.exists(line): return line
-    except Exception as e:
-        log.debug(f"Screenshot failed: {e}")
+    for attempt in range(3):
+        try:
+            code = 'import FreeCADGui, tempfile, os; path = os.path.join(tempfile.gettempdir(), "freecad_screenshot.png"); ad = FreeCADGui.ActiveDocument; av = ad.ActiveView if ad else None; av.saveImage(path, 800, 600, "PNG") if av else None; print(path if av else "NO_VIEW")'
+            result = rpc_call('execute_code', [code])
+            msg = result.get('message', '') if isinstance(result, dict) else str(result)
+            for line in msg.split('\n'):
+                line = line.strip()
+                if line.endswith('.png'):
+                    import time; time.sleep(0.5)  # wait for file write
+                    if os.path.exists(line): return line
+            log.debug(f"Screenshot attempt {attempt+1}: no valid path in output: {msg[:200]}")
+        except Exception as e:
+            log.debug(f"Screenshot attempt {attempt+1} failed: {e}")
     return None
 
 def screenshot_to_base64(path):
@@ -336,8 +340,8 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
         else:
             skipped_detail = resp[:500] if resp else 'no response'
             log.warning(f"Step {i+1} skipped - model returned non-code: {skipped_detail}")
-            # Retry with explicit code-only instruction
-            retry_msg = f"Step {i+1}: {step.description}\n\nIMPORTANT: You MUST return JSON with action=code. Generate Python code using h.* wrapper methods. No questions, no explanations - just the code."
+            # Retry 1: explicit code-only instruction
+            retry_msg = f"Step {i+1}: {step.description}\n\nCRITICAL: Output ONLY this JSON format: {{\"action\": \"code\", \"description\": \"...\", \"code\": \"Python code using h.*\"}}\nGenerate working Python code. Use h.box(), h.cylinder(), h.cut(), h.fuse(), h.move()."
             step_msgs.append({"role": "user", "content": retry_msg})
             try:
                 retry_resp = call_polza(step_msgs, step_sys, model=model_profile.model_id if model_profile else None)
@@ -508,7 +512,9 @@ def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_c
     return {"reply": reply, "code": code, "output": out, "type": "code_execution", "task": task.to_dict(), "objects": task.objects_snapshot}
 
 # === HTTP Server ===
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer): daemon_threads = True
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 class ChatHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args): log.info(fmt % args)
