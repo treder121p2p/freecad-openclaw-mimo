@@ -15,6 +15,7 @@ from enhanced_logging import get_context_for_model, get_error_summary, get_recen
 from prompts import get_task_prompts, detect_task_features, VISUAL_CHECK_PROMPT, FALLBACK_TEMPLATES
 from typed_tools import get_tools_description, execute_tool, parse_error
 from error_feedback import analyze_error, build_error_context, categorize_error_severity
+from report_view import read_report_view, get_error_summary as get_report_errors, build_error_context_for_model
 from multi_view import capture_multi_view, screenshots_to_base64, build_multi_view_comparison, verify_step
 from skills import get_skills_description, execute_skill, SKILLS
 
@@ -221,7 +222,7 @@ def extract_json(text):
     return None
 
 # === ReAct Agent ===
-def react_execute(task, user_message, model_id=None, image_data=None, progress_callback=None):
+def react_execute(task, user_message, model_id=None, image_data=None, progress_callback=None, kimi_mode=False):
     """ReAct-агент с опциональным progress_callback для SSE."""
     def notify(event_type, data):
         if progress_callback:
@@ -307,7 +308,12 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
                     severity = categorize_error_severity(err)
                     error_ctx, analysis = build_error_context(err, safe, attempt+1, MAX_RETRIES+1)
                     log.warning(f"Step {i+1} error ({severity}): {analysis['error_type']} — {analysis['suggestion']}")
-                    step_msgs.extend([{"role": "assistant", "content": resp}, {"role": "user", "content": error_ctx}])
+                    # Also get Report view errors for richer context
+                    report_ctx = build_error_context_for_model(rpc_call, task.user_request)
+                    full_error_ctx = error_ctx
+                    if report_ctx:
+                        full_error_ctx += "\n\n" + report_ctx
+                    step_msgs.extend([{"role": "assistant", "content": resp}, {"role": "user", "content": full_error_ctx}])
                     try:
                         resp = call_polza(step_msgs, step_sys, model=model_profile.model_id if model_profile else None)
                         action = extract_json(resp)
@@ -328,8 +334,9 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
                         try:
                             vs = "You are an engineer. Check the FreeCAD model on the screenshot against the task description. Reply JSON: " + '{"match": true/false, "issues": ["issue1"], "summary": "..."}'
                             vm = [{"role": "user", "content": [{"type": "text", "text": f"Task: {task.user_request}\nStep: {step.description}"}, {"type": "image_url", "image_url": {"url": b64}}]}]
-                            vr = call_polza(vm, vs, model="anthropic/claude-sonnet-4.6")
-                            log.info(f"Visual check result: {vr[:300]}")
+                            vc_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
+                            vr = call_polza(vm, vs, model=vc_model)
+                            log.info(f"Visual check result ({vc_model}): {vr[:300]}")
                             va = extract_json(vr)
                             if va:
                                 step.visual_match = va.get("match")
@@ -340,7 +347,7 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
                                     fix_fb = f"Visual check found issues:\n{summary}\n\nIssues:\n" + "\n".join(f"- {x}" for x in issues) + "\n\nGenerate corrected Python code using h.* wrapper to fix these issues. Return JSON with action=code."
                                     step_msgs.append({"role": "user", "content": fix_fb})
                                     try:
-                                        fr = call_polza(step_msgs, step_sys, model="anthropic/claude-sonnet-4.6")
+                                        fr = call_polza(step_msgs, step_sys, model=vc_model)
                                         log.info(f"Visual fix response: {fr[:300]}")
                                         fa = extract_json(fr)
                                         if fa and fa.get('action') == 'code':
@@ -400,13 +407,13 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
 
     # === ФИНАЛЬНОЕ СРАВНЕНИЕ С ЧЕРТЕЖОМ ===
     if task.reference_image and ENABLE_VISUAL_CHECK:
-        final_result = final_blueprint_comparison(task, model_profile, progress_callback)
+        final_result = final_blueprint_comparison(task, model_profile, progress_callback, kimi_mode=kimi_mode)
         if final_result:
             parts.append(f"\n🔍 Финальное сравнение: {final_result}")
 
     return {"reply": "\n".join(parts), "type": "multi_step", "task": task.to_dict(), "objects": task.objects_snapshot}
 
-def final_blueprint_comparison(task, model_profile, progress_callback=None):
+def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi_mode=False):
     """Финальное сравнение построенной модели с исходным чертежом.
     Цикл: скриншот → сравнение → коррекция → повтор (макс 2 раунда).
     """
@@ -466,8 +473,9 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None):
         }]
 
         try:
-            vr = call_polza(compare_msgs, compare_system, model="anthropic/claude-sonnet-4.6")
-            log.info(f"Final comparison response: {vr[:400]}")
+            fc_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
+            vr = call_polza(compare_msgs, compare_system, model=fc_model)
+            log.info(f"Final comparison response ({fc_model}): {vr[:400]}")
             va = extract_json(vr)
         except Exception as e:
             log.error(f"Final comparison API error: {e}")
@@ -547,7 +555,7 @@ def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_c
     # Финальное сравнение с чертежом
     comparison_note = ""
     if task.reference_image and ENABLE_VISUAL_CHECK:
-        comp = final_blueprint_comparison(task, model_profile)
+        comp = final_blueprint_comparison(task, model_profile, kimi_mode=kimi_mode)
         if comp: comparison_note = f"\n\n🔍 Финальное сравнение: {comp}"
 
     reply = f"Done: {desc}\n\n```python\n{code}\n```\n\nResult:\n```\n{out or 'OK'}\n```{comparison_note}"
@@ -640,6 +648,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         msg = data.get('message', '')
         model = data.get('model', None)
         img = data.get('image', None)
+        kimi_mode = data.get('kimi_mode', False)
         tid = data.get('task_id', None)
         try:
             ensure_document()
@@ -649,7 +658,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             else:
                 task = task_manager.get_or_create_recent(msg, max_age=300)
                 if task.status not in ("active",): task = task_manager.create_task(msg)
-            result = react_execute(task, msg, model_id=model, image_data=img)
+            result = react_execute(task, msg, model_id=model, image_data=img, kimi_mode=kimi_mode)
             if "task" not in result: result["task"] = task.to_dict()
             result["task_id"] = task.task_id
             self._json(result)
@@ -664,6 +673,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         model = data.get('model', None)
         img = data.get('image', None)
         tid = data.get('task_id', None)
+        kimi_mode = data.get('kimi_mode', False)
 
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
@@ -690,7 +700,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if task.status not in ("active",): task = task_manager.create_task(msg)
 
             send_sse("start", {"task_id": task.task_id})
-            result = react_execute(task, msg, model_id=model, image_data=img, progress_callback=send_sse)
+            result = react_execute(task, msg, model_id=model, image_data=img, progress_callback=send_sse, kimi_mode=kimi_mode)
             if "task" not in result: result["task"] = task.to_dict()
             result["task_id"] = task.task_id
             send_sse("done", result)
@@ -731,6 +741,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         data = json.loads(self._body().decode())
         ref = data.get('reference_image', '')
         desc = data.get('description', '')
+        kimi_mode = data.get('kimi_mode', False)
         if not ref: self._json({"error": "no image"}, 400); return
         try:
             ensure_document()
@@ -744,7 +755,11 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "Reply JSON: " + '{"match": true/false, "differences": [...], "correction_code": "Python code using h.* ONLY" or null, "summary": "..."}'
             )
             cm = [{"role": "user", "content": [{"type": "text", "text": f"Compare with reference. Description: {desc}"}, {"type": "image_url", "image_url": {"url": sb64}}, {"type": "image_url", "image_url": {"url": ref}}]}]
-            ai = call_polza(cm, cs, model="anthropic/claude-sonnet-4.6")
+            # Kimi mode: use Kimi for OCR/comparison; Claude is forbidden
+            # Default: use Claude
+            feedback_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
+            log.info(f"Feedback model: {feedback_model} (kimi_mode={kimi_mode})")
+            ai = call_polza(cm, cs, model=feedback_model)
             cmp = extract_json(ai) or {"match": False, "differences": [], "correction_code": None, "summary": ai[:200]}
             applied = False
             if cmp.get('correction_code') and not cmp.get('match', True):
