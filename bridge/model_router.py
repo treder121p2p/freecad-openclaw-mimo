@@ -44,7 +44,7 @@ MODELS = {
         supports_vision=True,
     ),
     "kimi": ModelProfile(
-        "moonshotai/kimi-k2.7-code",
+        "qwen/qwen3.5-35b-a3b",
         ["vision", "image_comparison", "screenshot_analysis", "ocr"],
         max_tokens=4096,
         supports_vision=True,

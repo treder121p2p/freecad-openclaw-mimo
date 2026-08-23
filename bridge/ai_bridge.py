@@ -222,7 +222,7 @@ def extract_json(text):
     return None
 
 # === ReAct Agent ===
-def react_execute(task, user_message, model_id=None, image_data=None, progress_callback=None, kimi_mode=False):
+def react_execute(task, user_message, model_id=None, image_data=None, progress_callback=None, vision_mode=False):
     """ReAct-агент с опциональным progress_callback для SSE."""
     def notify(event_type, data):
         if progress_callback:
@@ -234,10 +234,10 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
         log.info(f"Reference image saved for task {task.task_id}")
 
     notify("start", {"task_id": task.task_id, "message": user_message[:100]})
-    # Kimi-only mode: always use Kimi for code generation and vision
-    model_id = "moonshotai/kimi-k2.7-code"
+    # qwen3.5-only mode: always use Kimi for code generation and vision
+    model_id = "qwen/qwen3.5-35b-a3b"
     model_profile = MODELS.get("kimi")
-    log.info(f"Model: Kimi k2.7-code (kimi-only mode)")
+    log.info(f"Model: Kimi k2.7-code (qwen3.5-only mode)")
 
     doc_objects = get_document_objects()
     doc_ctx = "\n\nObjects:\n" + "\n".join(f"- {o['name']} ({o['type']})" for o in doc_objects) if doc_objects else ""
@@ -252,7 +252,14 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
     plan_sys = get_system_prompt_for_model(model_id, BASE_SYSTEM_PROMPT, doc_ctx) + f"\n\n{logs_ctx}\n\n{task_prompts}"
     plan_msgs = [{"role": "user", "content": user_message}]
     if image_data and model_profile and model_profile.supports_vision:
+        # Log image format details
+        prefix = image_data[:30] if len(image_data) > 30 else image_data
+        suffix = image_data[-20:] if len(image_data) > 20 else ''
+        log.info(f"Image format: prefix='{prefix}' suffix='{suffix}' len={len(image_data)}")
         plan_msgs[0]["content"] = [{"type": "text", "text": user_message + "\n\nRussian only."}, {"type": "image_url", "image_url": {"url": image_data}}]
+        log.info(f"Vision request: sending image ({len(image_data)} chars) to {model_id}")
+    else:
+        log.info(f"Text-only request: image_data={'yes' if image_data else 'no'}, supports_vision={model_profile.supports_vision if model_profile else 'no profile'}")
 
     notify("planning", {"model": model_id})
     try: plan_resp = call_polza(plan_msgs, plan_sys, model=model_profile.model_id if model_profile else None)
@@ -263,16 +270,16 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
     plan_action = extract_json(plan_resp)
 
     if plan_action and plan_action.get('action') == 'code':
-        return execute_single(task, plan_action, model_id, model_profile, plan_msgs, plan_resp, doc_ctx, progress_callback, kimi_mode=kimi_mode)
+        return execute_single(task, plan_action, model_id, model_profile, plan_msgs, plan_resp, doc_ctx, progress_callback, vision_mode=vision_mode)
     if plan_action and plan_action.get('action') == 'plan':
         steps_desc = plan_action.get('steps', [])
         if steps_desc:
             task.plan = steps_desc
             for d in steps_desc: task.add_step(d)
-            return execute_plan(task, model_id, model_profile, doc_ctx, progress_callback, kimi_mode=kimi_mode)
+            return execute_plan(task, model_id, model_profile, doc_ctx, progress_callback, vision_mode=vision_mode)
     return {"reply": plan_resp, "type": "text"}
 
-def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None, kimi_mode=False):
+def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None, vision_mode=False):
     """Execute all plan steps sequentially with progress notifications."""
     results = []
     for i, step in enumerate(task.steps):
@@ -337,7 +344,7 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None,
                                 content.append({"type": "text", "text": f"--- {vn} ---"})
                                 content.append({"type": "image_url", "image_url": {"url": b64}})
                             vm = [{"role": "user", "content": content}]
-                            vc_model = "moonshotai/kimi-k2.7-code"
+                            vc_model = "qwen/qwen3.5-35b-a3b"
                             vr = call_polza(vm, vs, model=vc_model)
                             log.info(f"Visual check result ({vc_model}): {vr[:300]}")
                             va = extract_json(vr)
@@ -410,13 +417,13 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None,
 
     # === ФИНАЛЬНОЕ СРАВНЕНИЕ С ЧЕРТЕЖОМ ===
     if task.reference_image and ENABLE_VISUAL_CHECK:
-        final_result = final_blueprint_comparison(task, model_profile, progress_callback, kimi_mode=kimi_mode)
+        final_result = final_blueprint_comparison(task, model_profile, progress_callback, vision_mode=vision_mode)
         if final_result:
             parts.append(f"\n🔍 Финальное сравнение: {final_result}")
 
     return {"reply": "\n".join(parts), "type": "multi_step", "task": task.to_dict(), "objects": task.objects_snapshot}
 
-def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi_mode=False):
+def final_blueprint_comparison(task, model_profile, progress_callback=None, vision_mode=False):
     """Финальное сравнение построенной модели с исходным чертежом.
     
     Цикл: 4 скриншота (Front/Top/Right/Iso) → сравнение → коррекция → повтор.
@@ -426,7 +433,7 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi
         return None
 
     MAX_COMPARE_ROUNDS = 3
-    fc_model = "moonshotai/kimi-k2.7-code"
+    fc_model = "qwen/qwen3.5-35b-a3b"
 
     for round_num in range(MAX_COMPARE_ROUNDS):
         task.comparison_rounds += 1
@@ -534,7 +541,7 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi
     # После всех раундов
     return f"⚠️ После {MAX_COMPARE_ROUNDS} раундов коррекции: {summary}"
 
-def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_ctx, progress_callback=None, kimi_mode=False):
+def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_ctx, progress_callback=None, vision_mode=False):
     code = action.get('code', '')
     desc = action.get('description', '')
     safe = code.encode('ascii', 'ignore').decode('ascii')
@@ -569,7 +576,7 @@ def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_c
     # Финальное сравнение с чертежом
     comparison_note = ""
     if task.reference_image and ENABLE_VISUAL_CHECK:
-        comp = final_blueprint_comparison(task, model_profile, kimi_mode=kimi_mode)
+        comp = final_blueprint_comparison(task, model_profile, vision_mode=vision_mode)
         if comp: comparison_note = f"\n\n🔍 Финальное сравнение: {comp}"
 
     reply = f"Done: {desc}\n\n```python\n{code}\n```\n\nResult:\n```\n{out or 'OK'}\n```{comparison_note}"
@@ -662,7 +669,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         msg = data.get('message', '')
         model = data.get('model', None)
         img = data.get('image', None)
-        kimi_mode = data.get('kimi_mode', False)
+        vision_mode = data.get('vision_mode', False)
         tid = data.get('task_id', None)
         try:
             ensure_document()
@@ -672,7 +679,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             else:
                 task = task_manager.get_or_create_recent(msg, max_age=300)
                 if task.status not in ("active",): task = task_manager.create_task(msg)
-            result = react_execute(task, msg, model_id=model, image_data=img, kimi_mode=kimi_mode)
+            result = react_execute(task, msg, model_id=model, image_data=img, vision_mode=vision_mode)
             if "task" not in result: result["task"] = task.to_dict()
             result["task_id"] = task.task_id
             self._json(result)
@@ -687,7 +694,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         model = data.get('model', None)
         img = data.get('image', None)
         tid = data.get('task_id', None)
-        kimi_mode = data.get('kimi_mode', False)
+        vision_mode = data.get('vision_mode', False)
 
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
@@ -714,7 +721,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if task.status not in ("active",): task = task_manager.create_task(msg)
 
             send_sse("start", {"task_id": task.task_id})
-            result = react_execute(task, msg, model_id=model, image_data=img, progress_callback=send_sse, kimi_mode=kimi_mode)
+            result = react_execute(task, msg, model_id=model, image_data=img, progress_callback=send_sse, vision_mode=vision_mode)
             if "task" not in result: result["task"] = task.to_dict()
             result["task_id"] = task.task_id
             send_sse("done", result)
@@ -755,7 +762,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         data = json.loads(self._body().decode())
         ref = data.get('reference_image', '')
         desc = data.get('description', '')
-        kimi_mode = data.get('kimi_mode', False)
+        vision_mode = data.get('vision_mode', False)
         if not ref: self._json({"error": "no image"}, 400); return
         try:
             ensure_document()
@@ -784,7 +791,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             cm = [{"role": "user", "content": content}]
 
             # Kimi-only: always use Kimi
-            feedback_model = "moonshotai/kimi-k2.7-code"
+            feedback_model = "qwen/qwen3.5-35b-a3b"
             log.info(f"Feedback model: {feedback_model}")
             ai = call_polza(cm, cs, model=feedback_model)
             cmp = extract_json(ai) or {"match": False, "differences": [], "correction_code": None, "summary": ai[:200]}
