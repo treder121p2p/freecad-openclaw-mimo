@@ -43,9 +43,9 @@ MODELS = {
         max_tokens=8192,
         supports_vision=True,
     ),
-    "qwen_vl": ModelProfile(
-        "qwen/qwen2.5-vl-72b-instruct",
-        ["vision", "image_comparison", "screenshot_analysis"],
+    "kimi": ModelProfile(
+        "moonshotai/kimi-k2.7-code",
+        ["vision", "image_comparison", "screenshot_analysis", "ocr"],
         max_tokens=4096,
         supports_vision=True,
     ),
@@ -107,9 +107,9 @@ def select_model(user_message, has_image=False, step_type=None, error_context=Fa
     if step_type == "visual_check":
         return "claude", MODELS["claude"], "visual check requires vision"
 
-    # Сравнение скриншотов — Qwen VL (специализирован на vision)
+    # Сравнение скриншотов — Kimi (vision + OCR)
     if step_type == "screenshot_compare":
-        return "qwen_vl", MODELS["qwen_vl"], "screenshot comparison"
+        return "kimi", MODELS["kimi"], "screenshot comparison with OCR"
 
     # Ошибки — MiMo Pro (код + анализ)
     if error_context:

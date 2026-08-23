@@ -49,11 +49,17 @@ def capture_view(rpc_call_fn, view_name="Iso", filename=None):
         result = rpc_call_fn('execute_code', [code])
         output = result.get('message', '') if isinstance(result, dict) else str(result)
 
-        if 'SCREENSHOT_OK:' in output:
-            path = output.split('SCREENSHOT_OK:')[1].strip()
-            time.sleep(0.3)  # wait for file write
-            if os.path.exists(path):
-                return path
+        for line in output.split('\n'):
+            line = line.strip()
+            # Strip RPC output prefix
+            if line.startswith('Output: '):
+                line = line[len('Output: '):].strip()
+            if line.startswith('SCREENSHOT_OK:'):
+                line = line[len('SCREENSHOT_OK:'):].strip()
+            if line.endswith('.png'):
+                time.sleep(0.3)
+                if os.path.exists(line):
+                    return line
 
         log.warning(f"Screenshot failed for view {view_name}: {output[:200]}")
     except Exception as e:

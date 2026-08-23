@@ -132,7 +132,17 @@ def ensure_document():
     if not wrapper_initialized:
         try:
             rpc_call('execute_code', ['import FreeCAD; doc = FreeCAD.activeDocument() or FreeCAD.newDocument("AIDoc")'])
-            rpc_call('execute_code', [get_wrapper_code()])
+            # Force fresh wrapper: delete old h, reload module, re-exec
+            rpc_call('execute_code', [
+                'import sys\n'
+                'if "freecad_api" in sys.modules: del sys.modules["freecad_api"]\n'
+                'sys.path.insert(0, "/opt/freecad/bridge")\n'
+                'import importlib, freecad_api\n'
+                'importlib.reload(freecad_api)\n'
+                'from freecad_api import get_wrapper_code\n'
+                'exec(get_wrapper_code())\n'
+                'print("Wrapper reloaded:", hasattr(h, "through_hole"))'
+            ])
             wrapper_initialized = True
             log.info("Wrapper initialized")
         except Exception as e:
@@ -160,6 +170,11 @@ def capture_screenshot():
             msg = result.get('message', '') if isinstance(result, dict) else str(result)
             for line in msg.split('\n'):
                 line = line.strip()
+                # Strip RPC output prefix (e.g. 'Output: /path' or 'SCREENSHOT_OK:/path')
+                if line.startswith('Output: '):
+                    line = line[len('Output: '):].strip()
+                elif line.startswith('SCREENSHOT_OK:'):
+                    line = line[len('SCREENSHOT_OK:'):].strip()
                 if line.endswith('.png'):
                     import time; time.sleep(0.5)  # wait for file write
                     if os.path.exists(line): return line
@@ -423,8 +438,22 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None):
             "\n1. Соответствует ли форма модели чертежу?"
             "\n2. Есть ли расхождения в размерах, пропорциях, отверстиях, пазах?"
             "\n3. Насколько точно модель повторяет чертёж?"
+            "\n\nДоступные методы для коррекции (ОБЯЗАТЕЛЬНО используй эти методы):"
+            "\n- h.box(dx, dy, dz, name) — коробка"
+            "\n- h.cylinder(r, h, name) — цилиндр"
+            "\n- h.sphere(r, name) — сфера"
+            "\n- h.cone(r1, r2, h, name) — конус"
+            "\n- h.fuse(obj1, obj2, name) — объединение"
+            "\n- h.cut(base, tool, name) — вычитание"
+            "\n- h.fillet(obj, r, name) — скругление"
+            "\n- h.chamfer(obj, r, name) — фаска"
+            "\n- h.move(obj, x, y, z) — перемещение"
+            "\n- h.place(obj, x, y, z, rx, ry, rz) — размещение"
+            "\n- h.list_objects() — список объектов"
+            "\n- h.clear() — очистка документа"
+            "\n\nНЕ используй cadquery, Part, или сырой FreeCAD API!"
             "\n\nОтвет ТОЛЬКО JSON:" +
-            '{"match": true/false, "accuracy": "high/medium/low", "differences": ["diff1"], "correction_code": "Python code to fix" or null, "summary": "brief summary in Russian"}'
+            '{"match": true/false, "accuracy": "high/medium/low", "differences": ["diff1"], "correction_code": "Python code using h.* wrapper ONLY" or null, "summary": "brief summary in Russian"}'
         )
 
         compare_msgs = [{
@@ -461,6 +490,11 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None):
         # Есть расхождения — нужна коррекция
         if not correction_code:
             return f"❌ Расхождения без кода коррекции: {'; '.join(differences[:3])}"
+
+        # Валидация: correction_code должен использовать h.* wrapper
+        if 'cadquery' in correction_code.lower() or 'import Part' in correction_code:
+            log.warning(f"Correction uses wrong API (cadquery/Part), skipping: {correction_code[:100]}")
+            return f"❌ Расхождения: {'; '.join(differences[:3])}. Vision-модель вернула код не на h.* wrapper."
 
         # Применяем коррекцию
         log.info(f"Applying correction round {round_num + 1}: {correction_code[:200]}")
@@ -703,14 +737,27 @@ class ChatHandler(BaseHTTPRequestHandler):
             sp = capture_screenshot()
             if not sp: self._json({"error": "screenshot failed"}, 500); return
             with open(sp, 'rb') as f: sb64 = 'data:image/png;base64,' + base64.b64encode(f.read()).decode('ascii')
-            cs = "Compare created model (screenshot) with reference. Reply JSON: " + '{"match": true/false, "differences": [...], "correction_code": "python" or null, "summary": "..."}'
+            cs = (
+                "Compare created model (screenshot) with reference drawing. "
+                "Use h.* wrapper methods for corrections (h.box, h.cylinder, h.cut, h.fuse, h.move). "
+                "NEVER use cadquery or raw FreeCAD API. "
+                "Reply JSON: " + '{"match": true/false, "differences": [...], "correction_code": "Python code using h.* ONLY" or null, "summary": "..."}'
+            )
             cm = [{"role": "user", "content": [{"type": "text", "text": f"Compare with reference. Description: {desc}"}, {"type": "image_url", "image_url": {"url": sb64}}, {"type": "image_url", "image_url": {"url": ref}}]}]
-            ai = call_polza(cm, cs, model="qwen/qwen2.5-vl-72b-instruct")
+            ai = call_polza(cm, cs, model="anthropic/claude-sonnet-4.6")
             cmp = extract_json(ai) or {"match": False, "differences": [], "correction_code": None, "summary": ai[:200]}
             applied = False
             if cmp.get('correction_code') and not cmp.get('match', True):
-                try: rpc_call('execute_code', [cmp['correction_code'].encode('ascii', 'ignore').decode('ascii')]); applied = True
-                except: pass
+                try:
+                    correction_code = cmp['correction_code']
+                    # Validate correction uses h.* wrapper
+                    if 'cadquery' in correction_code.lower() or 'import Part' in correction_code:
+                        log.warning(f"Correction uses wrong API, skipping: {correction_code[:100]}")
+                    else:
+                        rpc_call('execute_code', [correction_code.encode('ascii', 'ignore').decode('ascii')])
+                        applied = True
+                except Exception as e:
+                    log.warning(f"Feedback correction failed: {e}")
             self._json({"status": "ok", "screenshot": sb64, "comparison": cmp, "correction_applied": applied})
         except Exception as e: self._json({"error": str(e)}, 500)
 
