@@ -136,6 +136,9 @@ def call_polza(messages, system_prompt=None, model=None, temperature=0.3, max_to
         body["messages"].append({"role": "system", "content": system_prompt})
     for m in messages:
         body["messages"].append(m)
+    # Increase max_tokens for vision/comparison tasks
+    if model and ('vision' in str(messages).lower() or 'screenshot' in str(messages).lower() or 'compare' in str(messages).lower()):
+        body["max_tokens"] = max(max_tokens, 8192)
     conn = http.client.HTTPSConnection(POLZA_HOST, POLZA_PORT, timeout=180)
     conn.request('POST', POLZA_PATH, json.dumps(body), {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + POLZA_API_KEY})
     resp = conn.getresponse()
@@ -521,6 +524,9 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None, visi
             "\n- h.list_objects() — список объектов"
             "\n- h.clear() — очистка документа"
             "\n\nНЕ используй cadquery, Part, или сырой FreeCAD API!"
+            "\n\nВАЖНО: При коррекции НЕ используй h.clear()! Не пересоздавай модель с нуля."
+            "\nИсправляй ТОЛЬКО конкретные различия: добавь недостающие отверстия, измени размеры,"
+            "\nсдвинь/поверни неправильные элементы. Сохраняй правильные части модели."
             "\n\nОтвет ТОЛЬКО JSON:" +
             '{"match": true/false, "accuracy": "high/medium/low", "differences": ["diff1"], "correction_code": "Python code using h.* wrapper ONLY" or null, "summary": "brief summary in Russian"}'
         )
