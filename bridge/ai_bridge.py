@@ -99,9 +99,19 @@ BASE_SYSTEM_PROMPT = """
 
 ### ФОРМАТ ОТВЕТА:
 Всегда отвечай ТОЛЬКО JSON:
-```json
-{"action": "code", "description": "описание", "code": "код на Python с h.*"}
 ```
+{"action": "code", "description": "описание", "code": "код на Python"}
+```
+
+### ФОРМАТ КОДА (КРИТИЧЕСКИ ВАЖНО):
+- Код в поле `code` — это ОДНА строка с переносами \n
+- НЕ используй вложенные JSON в JSON
+- Каждая новая строка кода = \n в JSON-строке
+- Примеры правильного формата:
+  - "code": "base = h.box(100, 80, 15)\nh.move(base, 50, 40, 0)\nprint(h.info(base))"
+  - "code": "cyl = h.cylinder(20, 50)\nh.cut(base, cyl, \"Hole\")"
+- НЕ оборачивай код в ```python``` внутри JSON
+- НЕ добавляй лишние отступы в начало строк
 
 Если не хватает данных — спроси:
 ```json
@@ -207,8 +217,30 @@ def ensure_document():
             log.error(f"Wrapper init failed: {e}"); return False
     return True
 
+def clean_code(code):
+    """Clean generated code: fix indentation, remove markdown artifacts."""
+    if not code:
+        return code
+    # Remove markdown code block markers
+    code = code.strip()
+    if code.startswith('```python'):
+        code = code[9:]
+    elif code.startswith('```'):
+        code = code[3:]
+    if code.endswith('```'):
+        code = code[:-3]
+    code = code.strip()
+    # Fix common issues: tabs -> spaces
+    code = code.replace('\t', '    ')
+    # Remove trailing whitespace on each line
+    lines = code.split('\n')
+    lines = [l.rstrip() for l in lines]
+    code = '\n'.join(lines)
+    return code
+
 def execute_code_with_logs(code, step=None):
     try:
+        code = clean_code(code)
         result = rpc_call('execute_code', [code])
         output = result.get('message', '') if isinstance(result, dict) else str(result)
         fc_logs = get_context_for_model(after_execution=True, step_output=output)
