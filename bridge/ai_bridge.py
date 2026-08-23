@@ -50,29 +50,83 @@ task_manager = TaskManager(ttl_seconds=3600, max_tasks=50)
 wrapper_initialized = False
 
 # --- System Prompt ---
-BASE_SYSTEM_PROMPT = """You are FreeCAD AI Assistant v2.0.
+BASE_SYSTEM_PROMPT = """
+## ТЫ — AI-ассистент для 3D-моделирования в FreeCAD.
 
-## RULES:
-1. ALWAYS use the FreeCADHelper wrapper (object `h`) - NEVER use raw FreeCAD API
-2. Wrapper methods: h.box(), h.cylinder(), h.sphere(), h.cone(), h.torus()
-3. Booleans: h.fuse(), h.cut(), h.intersect()
-4. Modifiers: h.fillet(), h.chamfer()
-5. Movement: h.move(), h.rotate(), h.place()
-6. Info: h.info(), h.list_objects(), h.clear()
-7. Export: h.export_stl(), h.export_step()
-8. All units in MILLIMETERS
-9. After creation ALWAYS check: h.list_objects() or h.info(obj)
-10. Output ONLY JSON: {"action": "code", "description": "...", "code": "..."}
-11. Clarify: {"action": "clarify", "message": "..."}
-12. Plan: {"action": "plan", "steps": ["step1", ...]}
-13. Use descriptive names: "Base_Plate", "Mount_Bracket"
-14. If dimensions not given - ask first
-15. NEVER put for/while on same line with semicolons
-16. NEVER use 'App' — always use 'FreeCAD'
-17. NEVER use 'Part.Shape' directly — use h.* wrapper methods
-18. For through-holes: use h.through_hole(base, cx, cy, radius) — NOT manual cylinder+cut
-19. After fuse/cut: pass remove_old=True to delete original objects
-20. For placement: use h.place(obj, x, y, z, rx, ry, rz) — NOT h.rotate(obj, x, y, z, rx, ry)
+### ГЛАВНОЕ ПРАВИЛО:
+Ты работаешь ТОЛЬКО через объект `h` (FreeCADHelper). Никогда не используй голый FreeCAD API.
+
+### ДОСТУПНЫЕ МЕТОДЫ h:
+
+**Создание тел:**
+- h.box(length, width, height, name) — параллелепипед
+- h.cylinder(radius, height, name) — цилиндр
+- h.sphere(radius, name) — сфера
+- h.cone(radius1, radius2, height, name) — конус
+- h.torus(radius1, radius2, name) — тор
+
+**Boolean-операции:**
+- h.fuse(obj1, obj2, name, remove_old=True) — объединение
+- h.cut(base, tool, name, remove_old=True) — вычитание (объекты ДОЛЖНЫ пересекаться!)
+- h.intersect(obj1, obj2, name) — пересечение
+- h.through_hole(base, cx, cy, radius, name) — сквозное отверстие
+
+**Модификация:**
+- h.fillet(obj, radius, name) — скругление рёбер
+- h.chamfer(obj, size, name) — фаска
+
+**Позиционирование:**
+- h.move(obj, x, y, z) — перемещение
+- h.place(obj, x, y, z, rx, ry, rz) — размещение + поворот
+
+**Информация:**
+- h.list_objects() — список всех объектов в документе
+- h.info(obj) — объём, площадь, габариты объекта
+- h.clear() — удалить все объекты
+
+**Экспорт:**
+- h.export_stl(path) — экспорт в STL
+- h.export_step(path) — экспорт в STEP
+
+### ПРАВИЛА КОДА:
+1. Все единицы — МИЛЛИМЕТРЫ
+2. Объекты сохраняй в переменные: `base = h.box(...)`, `cyl = h.cylinder(...)`
+3. После создания проверяй: `h.list_objects()` или `h.info(obj)`
+4. Для boolean операций сначала позиционируй объекты через h.move()
+5. Используй remove_old=True в h.cut/h.fuse чтобы удалить оригиналы
+6. Не используй `App`, `Part`, `cadquery` — ТОЛЬКО h.*
+7. Имена объектов: `Base_Plate`, `Mount_Bracket`, `Hole_Tool`
+
+### ФОРМАТ ОТВЕТА:
+Всегда отвечай ТОЛЬКО JSON:
+```json
+{"action": "code", "description": "описание", "code": "код на Python с h.*"}
+```
+
+Если не хватает данных — спроси:
+```json
+{"action": "clarify", "message": "Какие размеры?"}
+```
+
+Если задача сложная — план:
+```json
+{"action": "plan", "steps": ["шаг 1: описание", "шаг 2: описание"]}
+```
+
+### ПРИМЕРЫ:
+
+Запрос: "Создай куб 50x50x50"
+```json
+{"action": "code", "description": "Создание куба 50x50x50", "code": "base = h.box(50, 50, 50, 'Cube_50')\nprint(h.info(base))"}
+```
+
+Запрос: "Вырежь отверстие в кубе"
+```json
+{"action": "code", "description": "Вырезание отверстия в кубе", "code": "base = h.box(100, 100, 20, 'Plate')\ntool = h.cylinder(15, 30, 'Hole_Tool')\nh.move(tool, 50, 50, -5)\nresult = h.cut(base, tool, 'Plate_With_Hole', remove_old=True)\nprint(h.info(result))"}
+```
+
+Запрос: "Создай деталь по чертежу" (с изображением)
+Проанализируй чертёж, определи размеры и форму,然后 создай модель пошагово.
 """ + get_prompt_addition() + "\n\n" + get_tools_description() + "\n\n" + get_skills_description()
 
 # --- Polza API ---
@@ -280,144 +334,134 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
     return {"reply": plan_resp, "type": "text"}
 
 def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None, vision_mode=False):
-    """Execute all plan steps sequentially with progress notifications."""
+    """Execute all plan steps sequentially with progress notifications.
+    Each step: generate code → execute → check errors → auto-fix → next step.
+    If auto-fix fails 3 times → ask human for help.
+    """
     results = []
+    MAX_STEP_RETRIES = 3
+
     for i, step in enumerate(task.steps):
         if step.status != "pending": continue
         step.status = "running"; step.started_at = time.time(); step.model_used = model_id
         if progress_callback:
             progress_callback("step_start", {"step": i+1, "total": len(task.steps), "description": step.description})
+
         step_ctx = task_manager.build_task_context(task)
         step_logs = get_recent_activity(3)
+
+        # Rich context for each step
+        current_objects = get_document_objects()
+        objects_desc = "\n".join(f"- {o['name']} ({o['type']})" for o in current_objects) if current_objects else "(пусто)"
+
         step_sys = get_system_prompt_for_model(model_id, BASE_SYSTEM_PROMPT, doc_ctx + "\n\n" + step_ctx + "\n\n" + step_logs)
-        step_msgs = [{"role": "user", "content": f"Step {i+1}: {step.description}\nUse h.list_objects() first."}]
+        step_msgs = [{"role": "user", "content": (
+            f"ШАГ {i+1}/{len(task.steps)}: {step.description}\n\n"
+            f"Текущие объекты в документе:\n{objects_desc}\n\n"
+            f"Сгенерируй Python-код используя h.* wrapper.\n"
+            f"После кода добавь h.list_objects() для проверки результата.\n"
+            f"Ответ ТОЛЬКО JSON: {{\"action\": \"code\", \"description\": \"...\", \"code\": \"...\"}}")}]
 
-        try: resp = call_polza(step_msgs, step_sys, model=model_profile.model_id if model_profile else None)
-        except Exception as e:
-            step.status = "error"; step.error = str(e); step.completed_at = time.time()
-            task.error_log.append(f"Step {i+1} API error: {e}")
-            results.append({"step": i+1, "status": "error", "error": str(e)}); continue
+        # Step execution with auto-correction loop
+        step_ok = False
+        for attempt in range(MAX_STEP_RETRIES):
+            try:
+                resp = call_polza(step_msgs, step_sys, model=model_profile.model_id if model_profile else None)
+            except Exception as e:
+                step.error = str(e)
+                task.error_log.append(f"Step {i+1} API error (attempt {attempt+1}): {e}")
+                if attempt < MAX_STEP_RETRIES - 1:
+                    step_msgs.append({"role": "assistant", "content": resp})
+                    step_msgs.append({"role": "user", "content": f"Ошибка API: {e}. Попробуй ещё раз."})
+                    continue
+                break
 
-        action = extract_json(resp)
-        if action and action.get('action') == 'code':
+            action = extract_json(resp)
+            if not action or action.get('action') != 'code':
+                # Model didn't return code - retry with explicit instruction
+                step_msgs.append({"role": "assistant", "content": resp})
+                step_msgs.append({"role": "user", "content": (
+                    "Ты должен вернуть ТОЛЬКО JSON с action=code. "
+                    "Пример: {\"action\": \"code\", \"description\": \"...\", \"code\": \"h.box(...)\"}")})
+                if attempt < MAX_STEP_RETRIES - 1:
+                    continue
+                step.status = "error"; step.error = "Model didn't return code"
+                task.error_log.append(step.error)
+                results.append({"step": i+1, "status": "error", "error": step.error})
+                break
+
             code = action.get('code', '')
             step.code = code
             safe = code.encode('ascii', 'ignore').decode('ascii')
-            ok = False
-            for attempt in range(MAX_RETRIES + 1):
-                out, logs, err = execute_code_with_logs(safe, step)
-                if not err: step.status = "success"; ok = True; results.append({"step": i+1, "status": "success", "output": (out or "")[:500]}); break
-                step.retry_count += 1; task.error_log.append(err)
-                if attempt < MAX_RETRIES:
-                    severity = categorize_error_severity(err)
-                    error_ctx, analysis = build_error_context(err, safe, attempt+1, MAX_RETRIES+1)
-                    log.warning(f"Step {i+1} error ({severity}): {analysis['error_type']} — {analysis['suggestion']}")
-                    # Also get Report view errors for richer context
-                    report_ctx = build_error_context_for_model(rpc_call, task.user_request)
-                    full_error_ctx = error_ctx
-                    if report_ctx:
-                        full_error_ctx += "\n\n" + report_ctx
-                    step_msgs.extend([{"role": "assistant", "content": resp}, {"role": "user", "content": full_error_ctx}])
-                    try:
-                        resp = call_polza(step_msgs, step_sys, model=model_profile.model_id if model_profile else None)
-                        action = extract_json(resp)
-                        if action and action.get('action') == 'code':
-                            code = action.get('code', ''); step.code = code; safe = code.encode('ascii', 'ignore').decode('ascii')
-                    except: break
-            if not ok:
-                step.status = "error"; task.status = "error"
-                results.append({"step": i+1, "status": "error", "error": step.error}); break
 
-            # Visual check — multi-view screenshots
-            if ENABLE_VISUAL_CHECK and ok:
-                screenshots = capture_compare_views(rpc_call)
-                if screenshots:
-                    b64_map = screenshots_to_base64(screenshots)
-                    step.screenshot_path = list(screenshots.values())[0] if screenshots else None
-                    if b64_map and model_profile and model_profile.supports_vision:
-                        try:
-                            vs = ("You are an engineer. Check the FreeCAD model from 4 views (Front/Top/Right/Iso) "
-                                  "against the task description. Reply JSON: " +
-                                  '{"match": true/false, "issues": ["issue1"], "summary": "..."}')
-                            content = [{"type": "text", "text": f"Task: {task.user_request}\nStep: {step.description}"}]
-                            for vn, b64 in b64_map.items():
-                                content.append({"type": "text", "text": f"--- {vn} ---"})
-                                content.append({"type": "image_url", "image_url": {"url": b64}})
-                            vm = [{"role": "user", "content": content}]
-                            vc_model = "qwen/qwen3.5-35b-a3b"
-                            vr = call_polza(vm, vs, model=vc_model)
-                            log.info(f"Visual check result ({vc_model}): {vr[:300]}")
-                            va = extract_json(vr)
-                            if va:
-                                step.visual_match = va.get("match")
-                                if not va.get("match", True):
-                                    issues = va.get("issues", [])
-                                    summary = va.get("summary", "")
-                                    log.warning(f"Visual check FAILED: {summary} | Issues: {issues}")
-                                    fix_fb = f"Visual check found issues:\n{summary}\n\nIssues:\n" + "\n".join(f"- {x}" for x in issues) + "\n\nGenerate corrected Python code using h.* wrapper to fix these issues. Return JSON with action=code."
-                                    step_msgs.append({"role": "user", "content": fix_fb})
-                                    try:
-                                        fr = call_polza(step_msgs, step_sys, model=vc_model)
-                                        log.info(f"Visual fix response: {fr[:300]}")
-                                        fa = extract_json(fr)
-                                        if fa and fa.get('action') == 'code':
-                                            fc = fa.get('code', '').encode('ascii', 'ignore').decode('ascii')
-                                            log.info(f"Applying visual fix: {fc[:200]}")
-                                            fo, fl, fe = execute_code_with_logs(fc, step)
-                                            if not fe:
-                                                step.status = "success"; step.visual_match = True
-                                                log.info(f"Visual fix applied successfully")
-                                            else:
-                                                log.warning(f"Visual fix failed: {fe}")
-                                    except Exception as fix_e:
-                                        log.warning(f"Visual fix error: {fix_e}")
-                                else:
-                                    log.info(f"Visual check PASSED: {va.get('summary', 'OK')}")
-                        except Exception as e: log.warning(f"Visual check error: {e}")
-                else:
-                    log.info(f"Visual check: screenshot failed or no vision model")
+            # Execute code
+            out, logs, err = execute_code_with_logs(safe, step)
+
+            if not err:
+                # Success!
+                step.status = "success"
+                step_ok = True
+                output_summary = (out or "OK")[:500]
+                results.append({"step": i+1, "status": "success", "output": output_summary})
+                log.info(f"Step {i+1} OK: {step.description[:50]}")
+
+                # Report success to model for next step context
+                step_msgs.append({"role": "assistant", "content": resp})
+                step_msgs.append({"role": "user", "content": f"Шаг выполнен успешно. Результат: {output_summary}"})
+                break
             else:
-                log.info(f"Visual check: skipped (ok={ok}, visual_check={ENABLE_VISUAL_CHECK})")
-        else:
-            skipped_detail = resp[:500] if resp else 'no response'
-            log.warning(f"Step {i+1} skipped - model returned non-code: {skipped_detail}")
-            # Retry 1: explicit code-only instruction
-            retry_msg = f"Step {i+1}: {step.description}\n\nCRITICAL: Output ONLY this JSON format: {{\"action\": \"code\", \"description\": \"...\", \"code\": \"Python code using h.*\"}}\nGenerate working Python code. Use h.box(), h.cylinder(), h.cut(), h.fuse(), h.move()."
-            step_msgs.append({"role": "user", "content": retry_msg})
-            try:
-                retry_resp = call_polza(step_msgs, step_sys, model=model_profile.model_id if model_profile else None)
-                retry_action = extract_json(retry_resp)
-                if retry_action and retry_action.get('action') == 'code':
-                    code = retry_action.get('code', '')
-                    step.code = code
-                    safe = code.encode('ascii', 'ignore').decode('ascii')
-                    out, logs, err = execute_code_with_logs(safe, step)
-                    if not err:
-                        step.status = "success"
-                        results.append({"step": i+1, "status": "success", "output": (out or '')[:500]})
-                    else:
-                        step.status = "error"
-                        task.error_log.append(err)
-                        results.append({"step": i+1, "status": "error", "error": err})
-                else:
-                    step.status = "skipped"
-                    results.append({"step": i+1, "status": "skipped", "model_response": retry_resp[:300]})
-            except Exception as e:
-                step.status = "skipped"
-                results.append({"step": i+1, "status": "skipped", "model_response": str(e)})
+                # Error - auto-correct
+                step.retry_count += 1
+                task.error_log.append(err)
+                log.warning(f"Step {i+1} attempt {attempt+1}/{MAX_STEP_RETRIES} error: {err[:200]}")
 
-    task.status = "error" if task.failed_steps() else "completed"
+                # Get Report view errors
+                report_ctx = build_error_context_for_model(rpc_call, task.user_request)
+
+                error_msg = (
+                    f"ОШИБКА при выполнении шага {i+1}:\n"
+                    f"{err}\n\n"
+                    f"Исправь код и повтори. Используй ТОЛЬКО h.* wrapper.\n"
+                    f"Ответ: {{\"action\": \"code\", \"description\": \"...\", \"code\": \"...\"}}")
+                if report_ctx:
+                    error_msg += f"\n\nДополнительная информация из FreeCAD:\n{report_ctx[:500]}"
+
+                step_msgs.append({"role": "assistant", "content": resp})
+                step_msgs.append({"role": "user", "content": error_msg})
+
+        if not step_ok and step.status != "success":
+            # All retries failed - ask human
+            step.status = "error"
+            task.status = "error"
+            last_error = step.error or "Не удалось выполнить шаг"
+            results.append({"step": i+1, "status": "error", "error": last_error})
+            if progress_callback:
+                progress_callback("ask_human", {
+                    "step": i+1,
+                    "error": last_error[:200],
+                    "message": f"Не удалось автоматически исправить шаг {i+1}: {step.description}. Помогите с решением."
+                })
+            break
+
+        # Visual check after each step
+        if ENABLE_VISUAL_CHECK and step_ok:
+            screenshots = capture_compare_views(rpc_call)
+            if screenshots:
+                step.screenshot_path = list(screenshots.values())[0]
+                log.info(f"Step {i+1} visual check: {len(screenshots)} views captured")
+
+    task.status = "completed" if not task.failed_steps() else "error"
     task.objects_snapshot = get_document_objects()
 
-    parts = [f"Task: {task.user_request[:100]}", f"Progress: {task.progress_pct()}% ({len(task.completed_steps())}/{len(task.steps)})"]
+    parts = [f"Задача: {task.user_request[:100]}", f"Прогресс: {task.progress_pct()}% ({len(task.completed_steps())}/{len(task.steps)})"]
     for r in results:
-        icon = "+" if r["status"] == "success" else "X" if r["status"] == "error" else "-"
-        parts.append(f"[{icon}] Step {r['step']}: {r['status']}")
-        if r.get("error"): parts.append(f"   Error: {r['error'][:150]}")
+        icon = "+" if r["status"] == "success" else "X"
+        parts.append(f"[{icon}] Шаг {r['step']}: {r['status']}")
+        if r.get("error"): parts.append(f"   Ошибка: {r['error'][:150]}")
 
-    # === ФИНАЛЬНОЕ СРАВНЕНИЕ С ЧЕРТЕЖОМ ===
+    # Финальное сравнение с чертежом
     if task.reference_image and ENABLE_VISUAL_CHECK:
-        final_result = final_blueprint_comparison(task, model_profile, progress_callback, vision_mode=vision_mode)
+        final_result = final_blueprint_comparison(task, model_profile, progress_callback)
         if final_result:
             parts.append(f"\n🔍 Финальное сравнение: {final_result}")
 
