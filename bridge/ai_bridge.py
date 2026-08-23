@@ -16,7 +16,7 @@ from prompts import get_task_prompts, detect_task_features, VISUAL_CHECK_PROMPT,
 from typed_tools import get_tools_description, execute_tool, parse_error
 from error_feedback import analyze_error, build_error_context, categorize_error_severity
 from report_view import read_report_view, get_error_summary as get_report_errors, build_error_context_for_model
-from multi_view import capture_multi_view, screenshots_to_base64, build_multi_view_comparison, verify_step
+from multi_view import capture_multi_view, capture_compare_views, screenshots_to_base64, build_multi_view_comparison, verify_step
 from skills import get_skills_description, execute_skill, SKILLS
 
 # --- Config ---
@@ -236,6 +236,11 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
     notify("start", {"task_id": task.task_id, "message": user_message[:100]})
     if not model_id:
         model_id, model_profile, reason = select_model(user_message, has_image=bool(image_data))
+        # Kimi mode: force Kimi for ALL tasks (code + vision)
+        if kimi_mode:
+            model_id = "moonshotai/kimi-k2.7-code"
+            model_profile = MODELS.get("kimi")
+            reason = "kimi_mode forced"
         log.info(f"Model: {model_id} ({reason})")
     else:
         model_profile = None
@@ -266,16 +271,16 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
     plan_action = extract_json(plan_resp)
 
     if plan_action and plan_action.get('action') == 'code':
-        return execute_single(task, plan_action, model_id, model_profile, plan_msgs, plan_resp, doc_ctx, progress_callback)
+        return execute_single(task, plan_action, model_id, model_profile, plan_msgs, plan_resp, doc_ctx, progress_callback, kimi_mode=kimi_mode)
     if plan_action and plan_action.get('action') == 'plan':
         steps_desc = plan_action.get('steps', [])
         if steps_desc:
             task.plan = steps_desc
             for d in steps_desc: task.add_step(d)
-            return execute_plan(task, model_id, model_profile, doc_ctx, progress_callback)
+            return execute_plan(task, model_id, model_profile, doc_ctx, progress_callback, kimi_mode=kimi_mode)
     return {"reply": plan_resp, "type": "text"}
 
-def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None):
+def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None, kimi_mode=False):
     """Execute all plan steps sequentially with progress notifications."""
     results = []
     for i, step in enumerate(task.steps):
@@ -324,16 +329,22 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
                 step.status = "error"; task.status = "error"
                 results.append({"step": i+1, "status": "error", "error": step.error}); break
 
-            # Visual check (from article: 65% of code blocks trigger visual inspection)
+            # Visual check — multi-view screenshots
             if ENABLE_VISUAL_CHECK and ok:
-                sp = capture_screenshot()
-                if sp:
-                    step.screenshot_path = sp
-                    b64 = screenshot_to_base64(sp)
-                    if b64 and model_profile and model_profile.supports_vision:
+                screenshots = capture_compare_views(rpc_call)
+                if screenshots:
+                    b64_map = screenshots_to_base64(screenshots)
+                    step.screenshot_path = list(screenshots.values())[0] if screenshots else None
+                    if b64_map and model_profile and model_profile.supports_vision:
                         try:
-                            vs = "You are an engineer. Check the FreeCAD model on the screenshot against the task description. Reply JSON: " + '{"match": true/false, "issues": ["issue1"], "summary": "..."}'
-                            vm = [{"role": "user", "content": [{"type": "text", "text": f"Task: {task.user_request}\nStep: {step.description}"}, {"type": "image_url", "image_url": {"url": b64}}]}]
+                            vs = ("You are an engineer. Check the FreeCAD model from 4 views (Front/Top/Right/Iso) "
+                                  "against the task description. Reply JSON: " +
+                                  '{"match": true/false, "issues": ["issue1"], "summary": "..."}')
+                            content = [{"type": "text", "text": f"Task: {task.user_request}\nStep: {step.description}"}]
+                            for vn, b64 in b64_map.items():
+                                content.append({"type": "text", "text": f"--- {vn} ---"})
+                                content.append({"type": "image_url", "image_url": {"url": b64}})
+                            vm = [{"role": "user", "content": content}]
                             vc_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
                             vr = call_polza(vm, vs, model=vc_model)
                             log.info(f"Visual check result ({vc_model}): {vr[:300]}")
@@ -415,45 +426,53 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None)
 
 def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi_mode=False):
     """Финальное сравнение построенной модели с исходным чертежом.
-    Цикл: скриншот → сравнение → коррекция → повтор (макс 2 раунда).
+    
+    Цикл: 4 скриншота (Front/Top/Right/Iso) → сравнение → коррекция → повтор.
+    Максимум 3 раунда коррекции.
     """
     if not task.reference_image or not model_profile or not model_profile.supports_vision:
         return None
 
-    MAX_COMPARE_ROUNDS = 2
+    MAX_COMPARE_ROUNDS = 3
+    fc_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
+
     for round_num in range(MAX_COMPARE_ROUNDS):
         task.comparison_rounds += 1
-        log.info(f"Final comparison round {round_num + 1}/{MAX_COMPARE_ROUNDS}")
+        log.info(f"Final comparison round {round_num + 1}/{MAX_COMPARE_ROUNDS} (model: {fc_model})")
 
         if progress_callback:
             progress_callback("visual_check", {"round": round_num + 1, "max": MAX_COMPARE_ROUNDS})
 
-        # Скриншот текущего состояния
-        sp = capture_screenshot()
-        if not sp:
-            log.warning("Final comparison: screenshot failed")
-            return "скриншот недоступен"
+        # 4 скриншота с центрированием
+        screenshots = capture_compare_views(rpc_call)
+        if not screenshots or len(screenshots) < 3:
+            log.warning(f"Final comparison: only {len(screenshots or {})} screenshots captured")
+            # fallback: try single screenshot
+            sp = capture_screenshot()
+            if not sp:
+                return "скриншот недоступен"
+            screenshots = {"Iso": sp}
 
-        b64 = screenshot_to_base64(sp)
-        if not b64:
+        b64_map = screenshots_to_base64(screenshots)
+        if not b64_map:
             return "скриншот не удалось прочитать"
 
-        # Сравнение через vision-модель
+        # Сравнение через vision-модель (все 4 вида)
         compare_system = (
-            "Ты — инженер-конструктор. Сравни построенную 3D-модель (скриншот) с исходным чертёжом."
+            "Ты — инженер-конструктор. Сравни построенную 3D-модель с исходным чертёжом."
+            "\n\nТебе показаны 4 ракурса: Front (спереди), Top (сверху), Right (справа), Iso (изометрия)."
             "\n\nПроанализируй:"
             "\n1. Соответствует ли форма модели чертежу?"
             "\n2. Есть ли расхождения в размерах, пропорциях, отверстиях, пазах?"
-            "\n3. Насколько точно модель повторяет чертёж?"
+            "\n3. Совпадают ли виды спереди, сверху, справа?"
+            "\n4. Насколько точно модель повторяет чертёж?"
             "\n\nДоступные методы для коррекции (ОБЯЗАТЕЛЬНО используй эти методы):"
             "\n- h.box(dx, dy, dz, name) — коробка"
             "\n- h.cylinder(r, h, name) — цилиндр"
-            "\n- h.sphere(r, name) — сфера"
-            "\n- h.cone(r1, r2, h, name) — конус"
             "\n- h.fuse(obj1, obj2, name) — объединение"
-            "\n- h.cut(base, tool, name) — вычитание"
+            "\n- h.cut(base, tool, name) — вычитание (объекты ДОЛЖНЫ пересекаться!)"
+            "\n- h.through_hole(base, cx, cy, radius) — сквозное отверстие"
             "\n- h.fillet(obj, r, name) — скругление"
-            "\n- h.chamfer(obj, r, name) — фаска"
             "\n- h.move(obj, x, y, z) — перемещение"
             "\n- h.place(obj, x, y, z, rx, ry, rz) — размещение"
             "\n- h.list_objects() — список объектов"
@@ -463,17 +482,17 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi
             '{"match": true/false, "accuracy": "high/medium/low", "differences": ["diff1"], "correction_code": "Python code using h.* wrapper ONLY" or null, "summary": "brief summary in Russian"}'
         )
 
-        compare_msgs = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": f"Задача: {task.user_request}\n\nСравни построенную модель с чертежом."},
-                {"type": "image_url", "image_url": {"url": b64}},
-                {"type": "image_url", "image_url": {"url": task.reference_image}}
-            ]
-        }]
+        # Собираем все скриншоты + чертёж
+        content = [{"type": "text", "text": f"Задача: {task.user_request}\n\nРаунд {round_num + 1}/{MAX_COMPARE_ROUNDS}. Сравни модель с чертежом по 4 ракурсам."}]
+        for view_name, b64 in b64_map.items():
+            content.append({"type": "text", "text": f"--- {view_name} view ---"})
+            content.append({"type": "image_url", "image_url": {"url": b64}})
+        content.append({"type": "text", "text": "--- Оригинальный чертёж ---"})
+        content.append({"type": "image_url", "image_url": {"url": task.reference_image}})
+
+        compare_msgs = [{"role": "user", "content": content}]
 
         try:
-            fc_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
             vr = call_polza(compare_msgs, compare_system, model=fc_model)
             log.info(f"Final comparison response ({fc_model}): {vr[:400]}")
             va = extract_json(vr)
@@ -501,13 +520,13 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi
 
         # Валидация: correction_code должен использовать h.* wrapper
         if 'cadquery' in correction_code.lower() or 'import Part' in correction_code:
-            log.warning(f"Correction uses wrong API (cadquery/Part), skipping: {correction_code[:100]}")
+            log.warning(f"Correction uses wrong API (cadquery/Part), skipping")
             return f"❌ Расхождения: {'; '.join(differences[:3])}. Vision-модель вернула код не на h.* wrapper."
 
         # Применяем коррекцию
         log.info(f"Applying correction round {round_num + 1}: {correction_code[:200]}")
         if progress_callback:
-            progress_callback("step_start", {"step": 99, "total": 100, "description": f"Коррекция по чертежу (раунд {round_num + 1})"})
+            progress_callback("step_start", {"step": 99, "total": 100, "description": f"Коррекция раунд {round_num + 1}: {summary[:80]}"})
 
         safe_code = correction_code.encode('ascii', 'ignore').decode('ascii')
         out, logs, err = execute_code_with_logs(safe_code)
@@ -517,11 +536,13 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi
             return f"❌ Расхождения: {'; '.join(differences[:3])}. Коррекция упала: {err[:200]}"
 
         log.info(f"Correction applied, rechecking...")
+        if progress_callback:
+            progress_callback("visual_check_done", {"round": round_num + 1, "match": False, "applied": True})
 
     # После всех раундов
     return f"⚠️ После {MAX_COMPARE_ROUNDS} раундов коррекции: {summary}"
 
-def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_ctx, progress_callback=None):
+def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_ctx, progress_callback=None, kimi_mode=False):
     code = action.get('code', '')
     desc = action.get('description', '')
     safe = code.encode('ascii', 'ignore').decode('ascii')
@@ -548,8 +569,9 @@ def execute_single(task, action, model_id, model_profile, msgs, resp_text, doc_c
         task.status = "error"; task.objects_snapshot = get_document_objects()
         return {"reply": f"Error after {MAX_RETRIES+1} attempts:\n{step.error[:500]}", "type": "error", "task": task.to_dict()}
     if ENABLE_VISUAL_CHECK:
-        sp = capture_screenshot()
-        if sp: step.screenshot_path = sp
+        screenshots = capture_compare_views(rpc_call)
+        if screenshots:
+            step.screenshot_path = list(screenshots.values())[0]
     task.status = "completed"; task.objects_snapshot = get_document_objects()
 
     # Финальное сравнение с чертежом
@@ -745,18 +767,30 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not ref: self._json({"error": "no image"}, 400); return
         try:
             ensure_document()
-            sp = capture_screenshot()
-            if not sp: self._json({"error": "screenshot failed"}, 500); return
-            with open(sp, 'rb') as f: sb64 = 'data:image/png;base64,' + base64.b64encode(f.read()).decode('ascii')
+            # 4 скриншота с центрированием
+            screenshots = capture_compare_views(rpc_call)
+            if not screenshots:
+                self._json({"error": "screenshot failed"}, 500); return
+            b64_map = screenshots_to_base64(screenshots)
+            if not b64_map:
+                self._json({"error": "screenshot encode failed"}, 500); return
+
             cs = (
-                "Compare created model (screenshot) with reference drawing. "
-                "Use h.* wrapper methods for corrections (h.box, h.cylinder, h.cut, h.fuse, h.move). "
+                "Compare created model (4 views: Front/Top/Right/Iso) with reference drawing. "
+                "Use h.* wrapper methods for corrections (h.box, h.cylinder, h.cut, h.fuse, h.move, h.through_hole). "
                 "NEVER use cadquery or raw FreeCAD API. "
                 "Reply JSON: " + '{"match": true/false, "differences": [...], "correction_code": "Python code using h.* ONLY" or null, "summary": "..."}'
             )
-            cm = [{"role": "user", "content": [{"type": "text", "text": f"Compare with reference. Description: {desc}"}, {"type": "image_url", "image_url": {"url": sb64}}, {"type": "image_url", "image_url": {"url": ref}}]}]
-            # Kimi mode: use Kimi for OCR/comparison; Claude is forbidden
-            # Default: use Claude
+
+            # Собираем контент: 4 скриншота + чертёж
+            content = [{"type": "text", "text": f"Compare with reference. Description: {desc}"}]
+            for vn, b64 in b64_map.items():
+                content.append({"type": "text", "text": f"--- {vn} view ---"})
+                content.append({"type": "image_url", "image_url": {"url": b64}})
+            content.append({"type": "text", "text": "--- Reference drawing ---"})
+            content.append({"type": "image_url", "image_url": {"url": ref}})
+            cm = [{"role": "user", "content": content}]
+
             feedback_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
             log.info(f"Feedback model: {feedback_model} (kimi_mode={kimi_mode})")
             ai = call_polza(cm, cs, model=feedback_model)
@@ -765,7 +799,6 @@ class ChatHandler(BaseHTTPRequestHandler):
             if cmp.get('correction_code') and not cmp.get('match', True):
                 try:
                     correction_code = cmp['correction_code']
-                    # Validate correction uses h.* wrapper
                     if 'cadquery' in correction_code.lower() or 'import Part' in correction_code:
                         log.warning(f"Correction uses wrong API, skipping: {correction_code[:100]}")
                     else:
@@ -773,7 +806,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                         applied = True
                 except Exception as e:
                     log.warning(f"Feedback correction failed: {e}")
-            self._json({"status": "ok", "screenshot": sb64, "comparison": cmp, "correction_applied": applied})
+            # Return first screenshot as main view
+            main_sb64 = b64_map.get('Iso', list(b64_map.values())[0]) if b64_map else None
+            self._json({"status": "ok", "screenshot": main_sb64, "comparison": cmp, "correction_applied": applied, "views": list(b64_map.keys())})
         except Exception as e: self._json({"error": str(e)}, 500)
 
 def main():

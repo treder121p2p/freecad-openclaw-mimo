@@ -23,11 +23,33 @@ VIEW_ANGLES = {
     "Trimetric": "FreeCADGui.ActiveDocument.ActiveView.viewTrimetric()",
 }
 
-# Минимальный набор для верификации (3 ракурса)
+# 4 views for comparison: 3 orthographic + 1 isometric
+COMPARE_VIEWS = ["Front", "Top", "Right", "Iso"]
+
+# Minimum verification set (legacy)
 VERIFY_VIEWS = ["Front", "Top", "Iso"]
 
 
-def capture_view(rpc_call_fn, view_name="Iso", filename=None):
+def center_and_fit(rpc_call_fn):
+    """Центрировать и вписать модель в вид (ViewFitAll)."""
+    code = (
+        "import FreeCADGui\n"
+        "FreeCADGui.SendMsgToActiveView(\"ViewFitAll\")\n"
+        "import time; time.sleep(0.5)\n"
+        "print('CENTER_OK')"
+    )
+    try:
+        result = rpc_call_fn('execute_code', [code])
+        output = result.get('message', '') if isinstance(result, dict) else str(result)
+        log.info(f"Center view: {output[:100]}")
+        time.sleep(0.3)  # additional settle time
+        return True
+    except Exception as e:
+        log.error(f"Center view failed: {e}")
+        return False
+
+
+def capture_view(rpc_call_fn, view_name="Iso", filename=None, center_first=True):
     """Сделать скриншот с конкретного ракурса."""
     if view_name not in VIEW_ANGLES:
         log.warning(f"Unknown view: {view_name}, using Iso")
@@ -37,9 +59,12 @@ def capture_view(rpc_call_fn, view_name="Iso", filename=None):
         filename = f"view_{view_name.lower()}.png"
 
     code = (
-        f"import FreeCADGui, tempfile, os\n"
+        f"import FreeCADGui, tempfile, os, time\n"
+        f"FreeCADGui.SendMsgToActiveView(\"ViewFitAll\")\n"
+        f"time.sleep(0.5)\n"
         f"view_cmd = '{VIEW_ANGLES[view_name]}'\n"
         f"exec(view_cmd)\n"
+        f"time.sleep(0.3)\n"
         f"path = os.path.join(tempfile.gettempdir(), '{filename}')\n"
         f"FreeCADGui.ActiveDocument.ActiveView.saveImage(path, 800, 600, 'PNG')\n"
         f"print('SCREENSHOT_OK:' + path)"
@@ -66,6 +91,27 @@ def capture_view(rpc_call_fn, view_name="Iso", filename=None):
         log.error(f"Screenshot error: {e}")
 
     return None
+
+
+def capture_compare_views(rpc_call_fn, views=None):
+    """Сделать 4 скриншота для сравнения: Front, Top, Right, Iso.
+    Каждый скриншот центрирует вид перед захватом.
+    """
+    if views is None:
+        views = COMPARE_VIEWS  # ["Front", "Top", "Right", "Iso"]
+    
+    # First: center the view globally
+    center_and_fit(rpc_call_fn)
+    
+    results = {}
+    for view in views:
+        path = capture_view(rpc_call_fn, view, center_first=False)
+        if path:
+            results[view] = path
+        else:
+            log.warning(f"Failed to capture {view}")
+    
+    return results
 
 
 def capture_multi_view(rpc_call_fn, views=None):
