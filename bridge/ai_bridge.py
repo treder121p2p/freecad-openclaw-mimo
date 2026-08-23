@@ -234,18 +234,10 @@ def react_execute(task, user_message, model_id=None, image_data=None, progress_c
         log.info(f"Reference image saved for task {task.task_id}")
 
     notify("start", {"task_id": task.task_id, "message": user_message[:100]})
-    if not model_id:
-        model_id, model_profile, reason = select_model(user_message, has_image=bool(image_data))
-        # Kimi mode: force Kimi for ALL tasks (code + vision)
-        if kimi_mode:
-            model_id = "moonshotai/kimi-k2.7-code"
-            model_profile = MODELS.get("kimi")
-            reason = "kimi_mode forced"
-        log.info(f"Model: {model_id} ({reason})")
-    else:
-        model_profile = None
-        for k, v in MODELS.items():
-            if v.model_id == model_id: model_profile = v; break
+    # Kimi-only mode: always use Kimi for code generation and vision
+    model_id = "moonshotai/kimi-k2.7-code"
+    model_profile = MODELS.get("kimi")
+    log.info(f"Model: Kimi k2.7-code (kimi-only mode)")
 
     doc_objects = get_document_objects()
     doc_ctx = "\n\nObjects:\n" + "\n".join(f"- {o['name']} ({o['type']})" for o in doc_objects) if doc_objects else ""
@@ -345,7 +337,7 @@ def execute_plan(task, model_id, model_profile, doc_ctx, progress_callback=None,
                                 content.append({"type": "text", "text": f"--- {vn} ---"})
                                 content.append({"type": "image_url", "image_url": {"url": b64}})
                             vm = [{"role": "user", "content": content}]
-                            vc_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
+                            vc_model = "moonshotai/kimi-k2.7-code"
                             vr = call_polza(vm, vs, model=vc_model)
                             log.info(f"Visual check result ({vc_model}): {vr[:300]}")
                             va = extract_json(vr)
@@ -434,7 +426,7 @@ def final_blueprint_comparison(task, model_profile, progress_callback=None, kimi
         return None
 
     MAX_COMPARE_ROUNDS = 3
-    fc_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
+    fc_model = "moonshotai/kimi-k2.7-code"
 
     for round_num in range(MAX_COMPARE_ROUNDS):
         task.comparison_rounds += 1
@@ -791,8 +783,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             content.append({"type": "image_url", "image_url": {"url": ref}})
             cm = [{"role": "user", "content": content}]
 
-            feedback_model = "moonshotai/kimi-k2.7-code" if kimi_mode else "anthropic/claude-sonnet-4.6"
-            log.info(f"Feedback model: {feedback_model} (kimi_mode={kimi_mode})")
+            # Kimi-only: always use Kimi
+            feedback_model = "moonshotai/kimi-k2.7-code"
+            log.info(f"Feedback model: {feedback_model}")
             ai = call_polza(cm, cs, model=feedback_model)
             cmp = extract_json(ai) or {"match": False, "differences": [], "correction_code": None, "summary": ai[:200]}
             applied = False

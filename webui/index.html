@@ -445,23 +445,9 @@
       <div class="chat-header">
         <div class="chat-header-left">
           <h2>💬 AI 3D Modeling</h2>
-          <div class="subtitle" id="header-subtitle">MiMo + FreeCAD — опишите задачу</div>
+          <div class="subtitle" id="header-subtitle">Kimi k2.7 + FreeCAD — опишите задачу или загрузите чертёж</div>
         </div>
         <div class="chat-header-actions">
-          <div class="model-selector">
-            <button class="model-btn active" data-model="xiaomi/mimo-v2.5" onclick="selectModel(this)">
-              💰 MiMo <span class="tag">Быстрая</span>
-            </button>
-            <button class="model-btn" data-model="xiaomi/mimo-v2.5-pro" onclick="selectModel(this)">
-              🔥 Pro <span class="tag">Сложные</span>
-            </button>
-            <button class="model-btn" data-model="anthropic/claude-sonnet-4.6" onclick="selectModel(this)">
-              🧠 Claude <span class="tag">Vision</span>
-            </button>
-            <button class="model-btn kimi-toggle" data-model="xiaomi/mimo-v2.5-pro" onclick="toggleKimi(this)">
-              🔮 Kimi <span class="tag" id="kimi-tag">OFF</span>
-            </button>
-          </div>
           <button class="header-btn" onclick="exportChat()">📥</button>
           <button class="header-btn" onclick="clearChat()">🗑</button>
         </div>
@@ -541,68 +527,15 @@
     var conversationHistory = [];
     var sessionId = localStorage.getItem('freecad_session_id') || generateSessionId();
     var steps = [];
-    var currentModel = localStorage.getItem('freecad_model') || 'xiaomi/mimo-v2.5';
-    var kimiMode = localStorage.getItem('freecad_kimi') === 'true';
+    var currentModel = 'moonshotai/kimi-k2.7-code'; // Kimi-only
+    var kimiMode = true; // always on
     var pendingImage = null; // base64 data URL
 
     localStorage.setItem('freecad_session_id', sessionId);
     document.getElementById('session-id').textContent = 'Session: ' + sessionId.substring(0, 8);
 
-    // Restore model selection
-    document.querySelectorAll('.model-btn').forEach(function(btn) {
-      if (btn.classList.contains('kimi-toggle')) return; // skip Kimi btn
-      btn.classList.toggle('active', btn.dataset.model === currentModel);
-    });
-
-    // Restore Kimi toggle state
-    if (kimiMode) {
-      var kimiBtn = document.querySelector('.kimi-toggle');
-      if (kimiBtn) {
-        kimiBtn.classList.add('active');
-        var tag = document.getElementById('kimi-tag');
-        if (tag) { tag.textContent = 'ON'; tag.className = 'on'; }
-      }
-    }
-
     function generateSessionId() {
       return 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
-    }
-
-    function selectModel(btn) {
-      if (btn.classList.contains('kimi-toggle')) return; // skip Kimi btn
-      document.querySelectorAll('.model-btn').forEach(function(b) {
-        if (!b.classList.contains('kimi-toggle')) b.classList.remove('active');
-      });
-      btn.classList.add('active');
-      currentModel = btn.dataset.model;
-      localStorage.setItem('freecad_model', currentModel);
-      var names = {
-        'xiaomi/mimo-v2.5': 'MiMo v2.5 (дешёвая)',
-        'xiaomi/mimo-v2.5-pro': 'MiMo v2.5 Pro (сильная)',
-        'anthropic/claude-sonnet-4.6': 'Claude (vision)'
-      };
-      addMessage('system', 'Модель: ' + (names[currentModel] || currentModel));
-    }
-
-    function toggleKimi(btn) {
-      kimiMode = !kimiMode;
-      localStorage.setItem('freecad_kimi', kimiMode);
-      updateKimiUI();
-    }
-
-    function updateKimiUI() {
-      var kimiBtn = document.querySelector('.kimi-toggle');
-      if (kimiBtn) {
-        kimiBtn.classList.toggle('active', kimiMode);
-      }
-      var tag = document.getElementById('kimi-tag');
-      if (kimiMode) {
-        if (tag) { tag.textContent = 'ON'; tag.className = 'on'; }
-        addMessage('system', '🔮 Kimi OCR включён — все vision-задачи через Kimi (Claude заблокирован)');
-      } else {
-        if (tag) { tag.textContent = 'OFF'; tag.className = 'off'; }
-        addMessage('system', '🔮 Kimi OCR выключен — используется Claude');
-      }
     }
 
     // Auto-resize textarea
